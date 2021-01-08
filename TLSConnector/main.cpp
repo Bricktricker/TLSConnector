@@ -55,7 +55,7 @@ int main() {
 	freeaddrinfo(result);
 
 	TLSConnector tls(connectedSocket);
-	tls.connect(URL); //localhost
+	tls.connect(URL);
 
 	closesocket(connectedSocket);
 	WSACleanup();

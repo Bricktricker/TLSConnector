@@ -1,4 +1,4 @@
-server/ #openssl s_server files
+server/
 TLSConnector.cppcheck
 
 ## Ignore Visual Studio temporary files, build results, and
