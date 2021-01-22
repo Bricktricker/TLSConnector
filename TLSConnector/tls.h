@@ -24,12 +24,63 @@ https://tools.ietf.org/html/rfc5246
 
 class TLSConnector {
 
+	struct Cipher {
+		Cipher(
+			const LPCWSTR _prfHash,
+			const size_t _macSize,
+			const size_t _aesKeySize,
+			const size_t _blockSize,
+			const LPCWSTR _hmacAlgo)
+			:	prfHash(_prfHash),
+				macSize(_macSize),
+				aesKeySize(_aesKeySize),
+				blockSize(_blockSize),
+				hmacAlgo(_hmacAlgo)
+		{}
+		Cipher(const Cipher&) = default;
+		Cipher& operator=(const Cipher&) = default;
+
+		LPCWSTR prfHash;
+		size_t macSize;
+		size_t aesKeySize;
+		size_t blockSize;
+		LPCWSTR hmacAlgo;
+	};
+
 	struct HandshakeData {
+		explicit HandshakeData(const std::string& _host)
+			: host(_host)
+		{}
+
 		std::vector<byte> clientRandom;
 		std::vector<byte> serverRandom;
+		std::vector<byte> serverPublickey;
 
 		std::vector<byte> serverPublicKey;
 		std::unique_ptr<RUNNING_HASH> handshakeHash;
+		const std::string host;
+	};
+
+	struct ConnectionData {
+		ConnectionData()
+			: cipher(nullptr, 0, 0, 0, nullptr) //dummy cipher
+		{}
+
+		Cipher cipher;
+
+		BCRYPT_KEY_HANDLE sendKey;
+		BCRYPT_KEY_HANDLE recvKey;
+
+		std::vector<byte> clientMac;
+		std::vector<byte> serverMac;
+		std::vector<byte> clientIV; //needed for AES_GCM, I think
+		std::vector<byte> serverIV; //needed for AES_GCM, I think
+
+		std::vector<byte> masterSecret;
+
+		uint64_t send_seq_num = 0; //TODO: increment
+		uint64_t recv_seq_num = 0; //TODO: increment
+		bool encryptionOn = false;
 	};
 
 public:
@@ -37,60 +88,55 @@ public:
 	~TLSConnector() = default;
 
 	void connect(const std::string& host) {
-		sendClientHello(host);
-		receiveServerHello();
-		receiveCertificate();
-		if (((connectionData.cipher & 0xff00) >> 8) == 0xc0) { //uses (EC)DHE_ key exchange methods
-			receiveKeyExchange();
+		HandshakeData handshake(host);
+
+		{
+			const auto clientHelloData = getClientHello(&handshake);
+			sendRecord(0x16, 0x1, clientHelloData);
 		}
-		receiveHelloDone();
 
-		const std::vector<byte> clientPublicKey = generateKeyPair();
-		sendClientKeyExchange(clientPublicKey);
+		receiveRecord(&handshake); //server hello
+		receiveRecord(&handshake); //server certificate
 
-		generateMasterSecret();
+		if (true) { //uses (EC)DHE_ key exchange methods
+			receiveRecord(&handshake);
+		}
+		receiveRecord(&handshake); //hello done
+
+		const std::vector<byte> clientPublicKey = generateMasterSecret(&handshake);
+		sendClientKeyExchange(clientPublicKey, &handshake);
 		sendChangeCipherSpec();
-		sendClientFinish();
+		sendClientFinish(&handshake);
 
-		receiveChangeCipherSpec();
-		receiveServerFinish();
+		receiveRecord(&handshake); //server change cipher spec
+		receiveRecord(&handshake); //server finish
 	}
 
 private:
 	const SOCKET m_socket;
 
-	struct ConnectionData {
-		ConnectionData() : handshakeHash(BCRYPT_SHA256_ALGORITHM) {}
+	ConnectionData connectionData;
 
-		std::vector<byte> clientRandom;
-		std::vector<byte> serverRandom;
-		//std::vector<byte> serverCertificate;
-		std::vector<byte> serverPublickey;
-		uint16_t cipher;
-		BCRYPT_KEY_HANDLE clientKeyHandle;
+	Cipher getCipher(const uint16_t chiperId) {
+		switch (chiperId)
+		{
+		//format: PRF_HASH, MAC size AES key size (bytes), block size, HMAC algorithm
+		case 0xc013: // TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA
+			return { BCRYPT_SHA256_ALGORITHM, 20, 16, 16, BCRYPT_SHA1_ALGORITHM };
+		default:
+			throw std::runtime_error("unsupported cipher id");
+		}
+	}
 
-		BCRYPT_KEY_HANDLE sendKey;
-		BCRYPT_KEY_HANDLE recvKey;
-
-		std::vector<byte> clientMac;
-		std::vector<byte> serverMac;
-		std::vector<byte> clientIV;
-		std::vector<byte> serverIV;
-
-		RUNNING_HASH handshakeHash;
-		std::vector<byte> masterSecret;
-
-		uint64_t send_seq_num = 0; //TODO: increment
-		uint64_t recv_seq_num = 0; //TODO: increment
-	} connectionData;
-
-	void sendClientHello(const std::string& host) {
+	std::vector<byte> getClientHello(HandshakeData* handshake) {
 		BufferBuilder buf;
 
 		buf.putArray({3, 3}); //TLS 1.2 Client version
 
-		connectionData.clientRandom = getRandomData(32);
-		buf.putArray(connectionData.clientRandom);
+		if (handshake->clientRandom.empty()) {
+			handshake->clientRandom = getRandomData(32);
+		}
+		buf.putArray(handshake->clientRandom);
 
 		buf.put(0); //session id (no session)
 
@@ -117,14 +163,14 @@ private:
 			{
 				//SNI extension
 				extBuf.putArray({ 0, 0 }); //extension 'server name'
-				extBuf.putU16(host.size() + 5);
-				extBuf.putU16(host.size() + 3); //only entry length
+				extBuf.putU16(handshake->host.size() + 5);
+				extBuf.putU16(handshake->host.size() + 3); //only entry length
 
 				extBuf.put(0); //list entry type 'DNS hostname'
 
 				//size + host name string
-				extBuf.putU16(host.size());
-				extBuf.putArray((byte*)host.data(), host.size());
+				extBuf.putU16(handshake->host.size());
+				extBuf.putArray((byte*)handshake->host.data(), handshake->host.size());
 			}
 
 			{
@@ -173,40 +219,26 @@ private:
 		handshakeBuf.putU24(buf.size());
 		handshakeBuf.putArray(buf.data());
 
-		sendRecord(0x16, 0x1, handshakeBuf.data());
+		return handshakeBuf.data();
 	}
 
-	void receiveServerHello() {
-		BufferReader recordBuffer = receiveRecord();
-		if (recordBuffer.read() != 0x16) {
-			throw std::runtime_error("unexpected record type");
-		}
-
-		if (recordBuffer.readU16() != 0x0303) {
+	void receiveServerHello(HandshakeData* handshake, BufferReader helloBuffer, const size_t tlsVersion) {
+		if (tlsVersion != 0x0303) {
 			throw std::runtime_error("unexpected tls version");
 		}
 
-		const size_t handshakeSize = recordBuffer.readU16();
-		BufferReader handshakeBuffer = recordBuffer.readArray(handshakeSize);
-		assert(recordBuffer.remaining() == 0);
-
-		if (handshakeBuffer.read() != 0x2) {
-			throw std::runtime_error("unexpected message type");
-		}
-		const size_t serverHelloLength = handshakeBuffer.readU24();
-
-		BufferReader helloBuffer = handshakeBuffer.readArray(serverHelloLength);
-		assert(handshakeBuffer.remaining() == 0);
 		if (helloBuffer.readU16() != 0x0303) {
 			throw std::runtime_error("unexpected tls version");
 		}
-		connectionData.serverRandom = helloBuffer.readArrayRaw(32);
+
+		handshake->serverRandom = helloBuffer.readArrayRaw(32);
 		const size_t sessionIdLength = helloBuffer.read();
 		if (sessionIdLength > 0) {
 			helloBuffer.skip(sessionIdLength); //ignore session id
 		}
-		connectionData.cipher = static_cast<uint16_t>(helloBuffer.readU16());
-		std::cout << "cipher: " << ((connectionData.cipher & 0xff00) >> 8) << ' ' << (connectionData.cipher & 0xff) << '\n';
+		const uint16_t cipherId = static_cast<uint16_t>(helloBuffer.readU16());
+		std::cout << "cipher: " << ((cipherId & 0xff00) >> 8) << ' ' << (cipherId & 0xff) << '\n';
+		connectionData.cipher = getCipher(cipherId);
 		if (helloBuffer.read() != 0) {
 			throw std::runtime_error("unexpected compression method");
 		}
@@ -214,24 +246,22 @@ private:
 			const size_t extensionLength = helloBuffer.readU16();
 			std::cout << extensionLength << " bytes of extension data\n";
 		}
+
+		handshake->handshakeHash = std::make_unique<RUNNING_HASH>(connectionData.cipher.prfHash);
+
+		//insert client hello and server hello into hash, need to recreate handshake header for hash
+		handshake->handshakeHash->addData(getClientHello(handshake));
+		BufferBuilder helloBuilder;
+		helloBuilder.put(0x02); //server hello record
+		helloBuilder.putU24(helloBuffer.data().size());
+
+		handshake->handshakeHash->addData(helloBuilder.data());
+		handshake->handshakeHash->addData(helloBuffer.data());
 	}
 
-	void receiveCertificate() {
-		BufferReader recordBuffer = receiveRecord();
-		if (recordBuffer.read() != 0x16) {
-			throw std::runtime_error("unexpected record type");
-		}
-
-		if (recordBuffer.readU16() != 0x0303) {
+	void receiveCertificate(HandshakeData* handshake, BufferReader handshakeBuffer, const size_t tlsVersion) {
+		if (tlsVersion != 0x0303) {
 			throw std::runtime_error("unexpected tls version");
-		}
-
-		const size_t handshakeSize = recordBuffer.readU16();
-		BufferReader handshakeBuffer = recordBuffer.readArray(handshakeSize);
-		assert(recordBuffer.remaining() == 0);
-
-		if (handshakeBuffer.read() != 0x0b) {
-			throw std::runtime_error("unexpected message type");
 		}
 		const size_t certificatesLength = handshakeBuffer.readU24();
 		size_t bytesHandled = 0;
@@ -244,25 +274,10 @@ private:
 		}
 	}
 
-	void receiveKeyExchange() {
-		BufferReader recordBuffer = receiveRecord();
-		if (recordBuffer.read() != 0x16) {
-			throw std::runtime_error("unexpected record type");
-		}
-
-		if (recordBuffer.readU16() != 0x0303) {
+	void receiveKeyExchange(HandshakeData* handshake, BufferReader keyInfoBuffer, const size_t tlsVersion) {
+		if (tlsVersion != 0x0303) {
 			throw std::runtime_error("unexpected tls version");
 		}
-
-		const size_t handshakeSize = recordBuffer.readU16();
-		BufferReader handshakeBuffer = recordBuffer.readArray(handshakeSize);
-		assert(recordBuffer.remaining() == 0);
-
-		if (handshakeBuffer.read() != 0x0c) {
-			throw std::runtime_error("unexpected message type");
-		}
-		const size_t keyInfoSize = handshakeBuffer.readU24();
-		BufferReader keyInfoBuffer = handshakeBuffer.readArray(keyInfoSize);
 
 		const size_t curveType = keyInfoBuffer.read();
 		if (curveType != 3) { //only support 'named_curve'
@@ -274,7 +289,7 @@ private:
 		}
 
 		const size_t publicKeyLength = keyInfoBuffer.read();
-		connectionData.serverPublickey = keyInfoBuffer.readArrayRaw(publicKeyLength);
+		handshake->serverPublickey = keyInfoBuffer.readArrayRaw(publicKeyLength);
 
 		//signature, not check in this implementation
 		keyInfoBuffer.skip(2); //SignatureAndHashAlgorithm (RFC5246 7.4.1.4.1)
@@ -283,80 +298,19 @@ private:
 		assert(keyInfoBuffer.remaining() == 0);
 	}
 
-	void receiveHelloDone() {
-		BufferReader recordBuffer = receiveRecord();
-		if (recordBuffer.read() != 0x16) {
-			throw std::runtime_error("unexpected record type");
-		}
-
-		if (recordBuffer.readU16() != 0x0303) {
+	void receiveHelloDone(HandshakeData* handshake, BufferReader handshakeBuffer, const size_t tlsVersion) {
+		if (tlsVersion != 0x0303) {
 			throw std::runtime_error("unexpected tls version");
 		}
-
-		const size_t handshakeSize = recordBuffer.readU16();
-		BufferReader handshakeBuffer = recordBuffer.readArray(handshakeSize);
-		assert(recordBuffer.remaining() == 0);
-
-		if (handshakeBuffer.read() != 0x0e) {
-			throw std::runtime_error("unexpected message type");
-		}
-		const size_t emptySize = handshakeBuffer.readU24();
-		if(emptySize != 0) {
+		if(handshakeBuffer.bufferSize() != 0) {
 			throw std::runtime_error("unexpected data in Server Hello Done");
 		}
-	}
-
-	//generates a x25519 curve private/public key pair, stores the key handle in connectionData and returns the raw public key bytes
-	std::vector<byte> generateKeyPair() {
-		BCRYPT_ALG_HANDLE hAlg = nullptr;
-		NTSTATUS status = BCryptOpenAlgorithmProvider(&hAlg, BCRYPT_ECDH_ALGORITHM, NULL, 0);
-		if (status != 0) {
-			throw std::runtime_error("Could not open curve x25519 provider");
-		}
-
-		status = BCryptSetProperty(hAlg, BCRYPT_ECC_CURVE_NAME, (PUCHAR)BCRYPT_ECC_CURVE_25519, sizeof(BCRYPT_ECC_CURVE_25519), 0);
-		if (status != 0) {
-			throw std::runtime_error("Could not set curve parameter");
-		}
-
-		connectionData.clientKeyHandle = nullptr;
-		status = BCryptGenerateKeyPair(hAlg, &connectionData.clientKeyHandle, 255, 0);
-		if (status != 0) {
-			throw std::runtime_error("Could not generate key pair");
-		}
-
-		status = BCryptFinalizeKeyPair(connectionData.clientKeyHandle, 0);
-		if (status != 0) {
-			throw std::runtime_error("Could not finalize key pair");
-		}
-
-		ULONG pcbResult = 0;
-		status = BCryptExportKey(connectionData.clientKeyHandle, 0, BCRYPT_ECCPUBLIC_BLOB, nullptr, 0, &pcbResult, 0);
-		if (status != 0) {
-			throw std::runtime_error("Could not export public key");
-		}
-
-		std::vector<byte> publicKey(pcbResult, 0);
-
-		status = BCryptExportKey(connectionData.clientKeyHandle, 0, BCRYPT_ECCPUBLIC_BLOB, publicKey.data(), publicKey.size(), &pcbResult, 0);
-		if (status != 0) {
-			throw std::runtime_error("Could not export public key");
-		}
-
-		BufferReader tmpReader(publicKey);
-		tmpReader.skip(4); //dwMagic
-		const size_t cbKey = htonl(tmpReader.readU32());
-		std::vector<byte> rawPublicKey = tmpReader.readArrayRaw(cbKey);
-
-		closeAlgorithm(hAlg);
-
-		return rawPublicKey;
 	}
 
 	std::vector<byte> prf(const std::string& label, const std::vector<byte>& seed, const size_t outputLength, const std::vector<byte>& masterSecret) {
 		const std::vector<byte> labelVec(begin(label), end(label));
 		
-		HMAC hmac(BCRYPT_SHA256_ALGORITHM);
+		HMAC hmac(connectionData.cipher.prfHash); //BCRYPT_SHA256_ALGORITHM
 		hmac.setSecret(masterSecret);
 
 		std::vector<byte> outBuffer;
@@ -371,7 +325,8 @@ private:
 		return outBuffer;
 	}
 
-	void generateMasterSecret() {
+	//generates a x25519 curve private/public key pair, generates the master secret and needed keys, returns the raw bytes for the client public key
+	std::vector<byte> generateMasterSecret(HandshakeData* handshake) {
 		BCRYPT_ALG_HANDLE hAlg = nullptr;
 		NTSTATUS status = BCryptOpenAlgorithmProvider(&hAlg, BCRYPT_ECDH_ALGORITHM, NULL, 0);
 		if (status != 0) {
@@ -383,25 +338,57 @@ private:
 			throw std::runtime_error("Could not set curve parameter");
 		}
 
-		BufferBuilder publicKeyBuf;
-		publicKeyBuf.putU32(htonl(BCRYPT_ECDH_PUBLIC_GENERIC_MAGIC));
-		publicKeyBuf.putU32(htonl(connectionData.serverPublickey.size()));
-		publicKeyBuf.putArray(connectionData.serverPublickey);
+		BCRYPT_KEY_HANDLE clientKeyHandle = nullptr;
+		status = BCryptGenerateKeyPair(hAlg, &clientKeyHandle, 255, 0);
+		if (status != 0) {
+			throw std::runtime_error("Could not generate key pair");
+		}
 
+		status = BCryptFinalizeKeyPair(clientKeyHandle, 0);
+		if (status != 0) {
+			throw std::runtime_error("Could not finalize key pair");
+		}
+
+		ULONG pcbResult = 0;
+		status = BCryptExportKey(clientKeyHandle, 0, BCRYPT_ECCPUBLIC_BLOB, nullptr, 0, &pcbResult, 0);
+		if (status != 0) {
+			throw std::runtime_error("Could not export public key");
+		}
+
+		std::vector<byte> publicKey(pcbResult, 0); //client public key
+
+		status = BCryptExportKey(clientKeyHandle, 0, BCRYPT_ECCPUBLIC_BLOB, publicKey.data(), static_cast<ULONG>(publicKey.size()), &pcbResult, 0);
+		if (status != 0) {
+			throw std::runtime_error("Could not export public key");
+		}
+
+		//store raw public key from client in rawPublicKey
+		BufferReader tmpReader(publicKey);
+		tmpReader.skip(4); //dwMagic
+		const size_t cbKey = htonl(static_cast<u_long>(tmpReader.readU32()));
+		const std::vector<byte> rawPublicKey = tmpReader.readArrayRaw(cbKey);
+
+		//import server public key
+		BCRYPT_KEY_HANDLE serverKeyHandle = nullptr;
 		{
+			BufferBuilder publicKeyBuf;
+			publicKeyBuf.putU32(htonl(BCRYPT_ECDH_PUBLIC_GENERIC_MAGIC));
+			publicKeyBuf.putU32(htonl(handshake->serverPublickey.size()));
+			publicKeyBuf.putArray(handshake->serverPublickey);
+
 			//expand buffer with zeros to a size of 0x48 bytes.
 			std::vector<byte> tmp(0x48 - publicKeyBuf.size(), 0);
 			publicKeyBuf.putArray(tmp);
+
+			status = BCryptImportKeyPair(hAlg, NULL, BCRYPT_ECCPUBLIC_BLOB, &serverKeyHandle, (PUCHAR)publicKeyBuf.data().data(), publicKeyBuf.size(), 0);
+			if (status != 0) {
+				throw std::runtime_error("Could not import server public key");
+			}
 		}
 
-		BCRYPT_KEY_HANDLE serverKeyHandle = nullptr;
-		status = BCryptImportKeyPair(hAlg, NULL, BCRYPT_ECCPUBLIC_BLOB, &serverKeyHandle, (PUCHAR)publicKeyBuf.data().data(), publicKeyBuf.size(), 0);
-		if (status != 0) {
-			throw std::runtime_error("Could not import server public key");
-		}
-
+		//generate pre master secret
 		BCRYPT_SECRET_HANDLE preMasterSecret = nullptr;
-		status = BCryptSecretAgreement(connectionData.clientKeyHandle, serverKeyHandle, &preMasterSecret, 0);
+		status = BCryptSecretAgreement(clientKeyHandle, serverKeyHandle, &preMasterSecret, 0);
 		if (status != 0) {
 			throw std::runtime_error("Could not generate pre master secret");
 		}
@@ -414,8 +401,8 @@ private:
 		keyGenDescData[0].pvBuffer = (PVOID)masterSecretStr.data();
 
 		std::vector<byte> seed;
-		seed.insert(end(seed), begin(connectionData.clientRandom), end(connectionData.clientRandom));
-		seed.insert(end(seed), begin(connectionData.serverRandom), end(connectionData.serverRandom));
+		seed.insert(end(seed), begin(handshake->clientRandom), end(handshake->clientRandom));
+		seed.insert(end(seed), begin(handshake->serverRandom), end(handshake->serverRandom));
 		assert(seed.size() == 64);
 		keyGenDescData[1].BufferType = KDF_TLS_PRF_SEED;
 		keyGenDescData[1].cbBuffer = seed.size();
@@ -427,10 +414,8 @@ private:
 		keyGenDescData[2].pvBuffer = &protocolVersion;
 
 		keyGenDescData[3].BufferType = KDF_HASH_ALGORITHM;
-		keyGenDescData[3].cbBuffer = sizeof(BCRYPT_SHA256_ALGORITHM)+1; // Length of 'SHA256' / 'SHA384'
-		keyGenDescData[3].pvBuffer = (PVOID)BCRYPT_SHA256_ALGORITHM; //defaults to SHA256
-
-		//https://docs.microsoft.com/en-us/windows/win32/api/bcrypt/nf-bcrypt-bcryptderivekey
+		keyGenDescData[3].cbBuffer = wcslen(connectionData.cipher.prfHash) * sizeof(WCHAR) + 2 + 1; // Length of 'SHA256' / 'SHA384'
+		keyGenDescData[3].pvBuffer = (PVOID)connectionData.cipher.prfHash; //BCRYPT_SHA256_ALGORITHM;
 
 		BCryptBufferDesc keyGenDesc;
 		keyGenDesc.ulVersion = BCRYPTBUFFER_VERSION;
@@ -451,13 +436,14 @@ private:
 		}
 		
 		//https://github.com/NetworkState/cwitch/blob/55f8fabcf6cdf2f3afe9e9f26dcd8bd0e30a5db0/tls12.h#L88
+		//key expansion to generate macs and write keys
 		{
 			BufferBuilder seedPRF(64);
-			seedPRF.putArray(connectionData.serverRandom);
-			seedPRF.putArray(connectionData.clientRandom);
+			seedPRF.putArray(handshake->serverRandom);
+			seedPRF.putArray(handshake->clientRandom);
 
-			const size_t macKeySize = 20; //mac key, 2x 20 bytes for SHA1 and 2x 32 bytes for SHA256. 0 for AES GCM mode!?
-			const size_t encKeySize = 16; //enc_key_length, 2x 16 bytes for AES 128 and 2x 32 bytes for AES 256
+			const size_t macKeySize = connectionData.cipher.macSize; //20; //mac key, 2x 20 bytes for SHA1 and 2x 32 bytes for SHA256. 0 for AES GCM mode!?
+			const size_t encKeySize = connectionData.cipher.aesKeySize; //16; //enc_key_length, 2x 16 bytes for AES 128 and 2x 32 bytes for AES 256
 			const size_t ivLength = 0; //fixed_iv_length, 2x 16 bytes. TODO: why 16 bytes?, 0 for AES_CBC?
 			const size_t expansionSize = 2 * macKeySize + 2 * encKeySize + 2 * ivLength;
 			const auto keyExpansion = prf("key expansion", seedPRF.data(), expansionSize, connectionData.masterSecret);
@@ -502,6 +488,8 @@ private:
 		}
 
 		closeAlgorithm(hAlg);
+
+		return rawPublicKey;
 	}
 
 	std::vector<byte> encrypt(const std::vector<byte>& data, const byte messageType, const std::vector<byte>& iv) const {
@@ -516,9 +504,9 @@ private:
 			macInput.putArray({3, 3}); //version, TLS 1.2
 			macInput.putU16(data.size());
 
-			HMAC sha1(BCRYPT_SHA1_ALGORITHM);
-			sha1.setSecret(connectionData.clientMac);
-			const std::vector<byte> hash = sha1.getHash(macInput.data(), data);
+			HMAC hmac(connectionData.cipher.hmacAlgo); //BCRYPT_SHA1_ALGORITHM
+			hmac.setSecret(connectionData.clientMac);
+			const std::vector<byte> hash = hmac.getHash(macInput.data(), data);
 			encryptContent.putArray(hash);
 		}
 
@@ -574,8 +562,8 @@ private:
 			const std::vector<byte> mac(outBuf.end()-macSize, outBuf.end());
 
 			//CHECK MAC
-			HMAC sha1(BCRYPT_SHA1_ALGORITHM);
-			sha1.setSecret(connectionData.serverMac);
+			HMAC hmac(connectionData.cipher.hmacAlgo); //BCRYPT_SHA1_ALGORITHM
+			hmac.setSecret(connectionData.serverMac);
 
 			BufferBuilder macInput;
 			macInput.putU64(connectionData.recv_seq_num);
@@ -583,7 +571,7 @@ private:
 			macInput.putArray({ 3, 3 }); //version, TLS 1.2
 			macInput.putU16(payloadSize);
 
-			const auto computedMac = sha1.getHash(macInput.data(), payload);
+			const auto computedMac = hmac.getHash(macInput.data(), payload);
 			if (mac != computedMac) {
 				throw std::runtime_error("Received MAC is corrupted");
 			}
@@ -592,13 +580,21 @@ private:
 		return payload;
 	}
 
-	void sendClientKeyExchange(const std::vector<byte>& publicKey) {
+	std::vector<byte> decryptRecord(BufferReader record, const uint16_t recordType) {
+		const std::vector<byte> iv = record.readArrayRaw(connectionData.cipher.blockSize); //16
+		const auto decryptData = record.readArrayRaw(record.bufferSize() - iv.size());
+		return decrypt(decryptData, recordType, iv);
+	}
+
+	void sendClientKeyExchange(const std::vector<byte>& publicKey, HandshakeData* handshake) {
 		BufferBuilder handshakeBuf;
 		handshakeBuf.put(0x10); //handshake message type 'client key exchange'
 		handshakeBuf.putU24(1 + publicKey.size()); //1 + n bytes of public key data follows
 
 		handshakeBuf.put(static_cast<byte>(publicKey.size())); //key length
 		handshakeBuf.putArray(publicKey);
+
+		handshake->handshakeHash->addData(handshakeBuf.data());
 
 		sendRecord(0x16, 0x3, handshakeBuf.data());
 	}
@@ -607,8 +603,8 @@ private:
 		sendRecord(0x14, 0x3, { 1 }); //0x14 = type ChangeCipherSpec record
 	}
 
-	void sendClientFinish() {
-		const size_t iv_size = 16; //record_iv_length = block_size = 16 for AES
+	void sendClientFinish(HandshakeData* handshake) {
+		const size_t iv_size = connectionData.cipher.blockSize; //record_iv_length = block_size = 16 for AES
 		const auto iv = getRandomData(iv_size);
 
 		BufferBuilder buf;
@@ -618,75 +614,51 @@ private:
 		{
 			BufferBuilder verifyBuilder;
 			verifyBuilder.put(0x14); //finish message
-			RUNNING_HASH handshakeHashCopy(connectionData.handshakeHash); //copy hash object, so we can get the current hash and can continue to use the old hashobject adn add the clientFinish message to it
+			RUNNING_HASH handshakeHashCopy(*handshake->handshakeHash); //copy hash object, so we can get the current hash and can continue to use the old hashobject and add the clientFinish message to it
 			const auto handshakeHash = handshakeHashCopy.finish();
 			const size_t verifyLength = 12;
 			const auto verifyData = prf("client finished", handshakeHash, verifyLength, connectionData.masterSecret);
 			verifyBuilder.putU24(verifyLength);
 			verifyBuilder.putArray(verifyData);
 
-			connectionData.handshakeHash.addData(verifyBuilder.data());
+			handshake->handshakeHash->addData(verifyBuilder.data());
 
 			const auto encryptedData = encrypt(verifyBuilder.data(), 0x16, iv); //handshake record type
 			buf.putArray(encryptedData);
 		}
 
-		sendRecord(0x16, 0x3, buf.data(), false); //handshake record
+		sendRecord(0x16, 0x3, buf.data()); //handshake record
 	}
 
-	void receiveChangeCipherSpec() {
-		BufferReader reader = receiveRecord();
-		if (reader.read() != 0x14) {
-			throw std::runtime_error("Did not receive server change cipherSpec");
-		}
-		if (reader.readU16() != 0x0303) {
+	void receiveChangeCipherSpec(BufferReader payload, const size_t tlsVersion) {
+		if (tlsVersion != 0x0303) {
 			throw std::runtime_error("unexpected tls version");
 		}
-		const auto length = reader.readU16();
-		auto payload = reader.readArray(length);
 		if (payload.bufferSize() != 1 || payload.read() != 0x1) {
 			throw std::runtime_error("wrong server change cipherSpec payload");
 		}
+		connectionData.encryptionOn = true;
 	}
 
-	void receiveServerFinish() {
-		BufferReader reader = receiveRecord(false);
-		if (reader.read() != 0x16) {
+	void receiveServerFinish(HandshakeData* handshake, BufferReader verifyData, const size_t tlsVersion) {
+		if (tlsVersion != 0x0303) {
 			throw std::runtime_error("unexpected record type");
 		}
-
-		if (reader.readU16() != 0x0303) {
-			throw std::runtime_error("unexpected tls version");
-		}
-		const size_t payloadSize = reader.readU16();
-		BufferReader payload = reader.readArray(payloadSize);
-		const auto iv = payload.readArrayRaw(16); //record_iv_length = block_size = 16 for AES
-		const auto decryptData = payload.readArrayRaw(payloadSize - iv.size());
-
-		auto verifyRecord = BufferReader(decrypt(decryptData, 0x16, iv)); //0x16 record type = handshake
-		if (verifyRecord.read() != 0x14) {
-			throw std::runtime_error("unexpected record type");
-		}
-		const auto verifyLength = verifyRecord.readU24();
-		const auto verifyData = verifyRecord.readArrayRaw(verifyLength);
 
 		//compute verify data
 		{
-			const auto handshakeHash = connectionData.handshakeHash.finish();
-			const auto computedVerify = prf("server finished", handshakeHash, verifyLength, connectionData.masterSecret);
+			const auto handshakeHash = handshake->handshakeHash->finish();
+			handshake->handshakeHash.reset(nullptr);
+			const auto computedVerify = prf("server finished", handshakeHash, verifyData.bufferSize(), connectionData.masterSecret);
 
-			if (computedVerify != verifyData) {
+			if (computedVerify != verifyData.data()) {
 				throw std::runtime_error("verify data corrupted");
 			}
 		}
 
 	}
 
-	void sendRecord(const byte type, const byte subVersion, const std::vector<byte>& data, const bool addToHash = true) {
-		if (type == 0x16 && addToHash) { //handshake record
-			connectionData.handshakeHash.addData(data);
-		}
-		
+	void sendRecord(const byte type, const byte subVersion, const std::vector<byte>& data) {		
 		BufferBuilder buf(5);
 		buf.put(type);
 		buf.putArray({3, subVersion }); //TLS version 1.subVersion
@@ -715,16 +687,18 @@ private:
 		} while (bytesSend < data.size());
 	}
 
-	BufferReader receiveRecord(const bool addToHash = true) {
+	void receiveRecord(HandshakeData* handshake) {
 		byte header[5]{ 0 };
 		size_t bytesReceived = 0;
 		do {
 			int headerStatus = recv(m_socket, (char*)header, 5, 0);
 			if (headerStatus == 0) {
 				throw std::runtime_error("Connection closed");
-			}else if (headerStatus < 0) {
+			}
+			else if (headerStatus < 0) {
 				throw std::runtime_error("recv failed, check 'WSAGetLastError()'");
-			}else {
+			}
+			else {
 				bytesReceived += headerStatus;
 			}
 		} while (bytesReceived < 5);
@@ -745,13 +719,52 @@ private:
 			}
 		} while (bytesReceived < msgLength);
 
-		if (header[0] == 0x16 && addToHash) { //check for handshake record
-			connectionData.handshakeHash.addData(msgContent);
-		}
-
 		msgContent.insert(begin(msgContent), header, header + 5); //prepend message header
 		hexdump(msgContent.data(), msgContent.size());
-		return BufferReader(msgContent);
+
+		BufferReader reader(msgContent);
+		const byte type = reader.read();
+		const size_t tlsVersion = reader.readU16();
+		const size_t recordSize = reader.readU16();
+
+		auto recordVec = reader.readArrayRaw(recordSize);
+
+		if (connectionData.encryptionOn) {
+			recordVec = decryptRecord(BufferReader(recordVec), type);
+		}
+		BufferReader recordReader(recordVec);
+
+		if (type == 0x16) { //handshake message
+			if (handshake->handshakeHash && !connectionData.encryptionOn) {
+				handshake->handshakeHash->addData(recordReader.data());
+			}
+			const byte handshakeType = recordReader.read();
+			const size_t handshakeSize = recordReader.readU24();
+			BufferReader handshakeData = recordReader.readArray(handshakeSize);
+
+			switch (handshakeType)
+			{
+			case 0x02: receiveServerHello(handshake, handshakeData, tlsVersion); break;
+			case 0x0b: receiveCertificate(handshake, handshakeData, tlsVersion); break;
+			case 0x0c: receiveKeyExchange(handshake, handshakeData, tlsVersion); break;
+			case 0x0e: receiveHelloDone(handshake, handshakeData, tlsVersion); break;
+			case 0x14: receiveServerFinish(handshake, handshakeData, tlsVersion); break;
+			default:
+				throw std::runtime_error("received unsuported handshake type");
+			}
+		}
+		else if (type == 0x14) {
+			receiveChangeCipherSpec(recordReader, tlsVersion);
+		}
+		else if (type == 0x15) { //alert
+			const size_t level = recordReader.read();
+			const size_t desc = recordReader.read();
+			std::cerr << "Alert: level " << level << ", description: " << desc << '\n';
+			throw std::runtime_error("received alert message");
+		}
+		else {
+			throw std::runtime_error("received unsuported record type");
+		}
 	}
 
 	std::vector<byte> getRandomData(const size_t length) const {

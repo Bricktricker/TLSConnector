@@ -27,7 +27,7 @@ public:
 	}
 
 	void setSecret(const std::vector<byte>& secret) {
-		NTSTATUS status = BCryptCreateHash(algHandle, &hashHandle, NULL, 0, (PUCHAR)secret.data(), secret.size(), BCRYPT_HASH_REUSABLE_FLAG);
+		NTSTATUS status = BCryptCreateHash(algHandle, &hashHandle, NULL, 0, (PUCHAR)secret.data(), static_cast<ULONG>(secret.size()), BCRYPT_HASH_REUSABLE_FLAG);
 		if (status != 0) {
 			throw std::runtime_error("Could not create SHA256 hash");
 		}
@@ -119,7 +119,7 @@ public:
 		}
 
 		std::vector<byte> outBuffer(hashSize, 0);
-		status = BCryptFinishHash(hashHandle, (PUCHAR)outBuffer.data(), outBuffer.size(), 0);
+		status = BCryptFinishHash(hashHandle, (PUCHAR)outBuffer.data(), static_cast<ULONG>(outBuffer.size()), 0);
 		if (status != 0) {
 			throw std::runtime_error("could not create hash");
 		}
@@ -128,7 +128,7 @@ public:
 	}
 
 	void addData(const std::vector<byte>& buffer) {
-		NTSTATUS status = BCryptHashData(hashHandle, (PUCHAR)buffer.data(), buffer.size(), 0);
+		NTSTATUS status = BCryptHashData(hashHandle, (PUCHAR)buffer.data(), static_cast<ULONG>(buffer.size()), 0);
 		if (status != 0) {
 			throw std::runtime_error("could not hash data");
 		}
