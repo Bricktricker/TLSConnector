@@ -144,16 +144,6 @@ private:
 
 		buf.put(0); //session id (no session)
 
-		//TODO: AES with CBC is vulnerable
-		//cipher suites
-		const byte cipher[] = {
-			//0x00, 0x9d, // TLS_RSA_WITH_AES_256_GCM_SHA384
-			//0x00, 0x9c, // TLS_RSA_WITH_AES_128_GCM_SHA256
-			//0xc0, 0x14, // TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA
-			0xc0, 0x13 // TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA
-			//0xc0, 0x2b, //TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256
-		};
-		const size_t cipherLength = sizeof(cipher);
 		buf.putU16(handshake->ciphers.size() * sizeof(uint16_t));
 		for (const auto c : handshake->ciphers) {
 			buf.putU16(c.first);
