@@ -59,6 +59,11 @@ class TLSConnector {
 		std::vector<byte> serverPublicKey;
 		std::unique_ptr<RUNNING_HASH> handshakeHash;
 		const std::string host;
+		const std::array<std::pair<uint16_t, Cipher>, 2> ciphers {{
+					//format: PRF_HASH, MAC size AES key size (bytes), block size, HMAC algorithm
+			{0xc013, { BCRYPT_SHA256_ALGORITHM, 20, 16, 16, BCRYPT_SHA1_ALGORITHM }}, //TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA
+			{0xc014, { BCRYPT_SHA256_ALGORITHM, 20, 32, 16, BCRYPT_SHA1_ALGORITHM}} //TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA
+		}};
 	};
 
 	struct ConnectionData {
@@ -117,14 +122,13 @@ private:
 
 	ConnectionData connectionData;
 
-	Cipher getCipher(const uint16_t chiperId) {
-		switch (chiperId)
-		{
-		//format: PRF_HASH, MAC size AES key size (bytes), block size, HMAC algorithm
-		case 0xc013: // TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA
-			return { BCRYPT_SHA256_ALGORITHM, 20, 16, 16, BCRYPT_SHA1_ALGORITHM };
-		default:
-			throw std::runtime_error("unsupported cipher id");
+	Cipher getCipher(const HandshakeData* handshake, const uint16_t chiperId) {
+		const auto itr = std::find_if(begin(handshake->ciphers), end(handshake->ciphers), [&chiperId](const auto &v) { return v.first == chiperId; });
+		if (itr != end(handshake->ciphers)) {
+			return itr->second;
+		}
+		else {
+			throw std::runtime_error("unsupported cipher");
 		}
 	}
 
@@ -150,8 +154,10 @@ private:
 			//0xc0, 0x2b, //TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256
 		};
 		const size_t cipherLength = sizeof(cipher);
-		buf.putU16(cipherLength);
-		buf.putArray(cipher, cipherLength);
+		buf.putU16(handshake->ciphers.size() * sizeof(uint16_t));
+		for (const auto c : handshake->ciphers) {
+			buf.putU16(c.first);
+		}
 
 		//copmpression methods
 		buf.putArray({1, 0});
@@ -238,7 +244,7 @@ private:
 		}
 		const uint16_t cipherId = static_cast<uint16_t>(helloBuffer.readU16());
 		std::cout << "cipher: " << ((cipherId & 0xff00) >> 8) << ' ' << (cipherId & 0xff) << '\n';
-		connectionData.cipher = getCipher(cipherId);
+		connectionData.cipher = getCipher(handshake, cipherId);
 		if (helloBuffer.read() != 0) {
 			throw std::runtime_error("unexpected compression method");
 		}
