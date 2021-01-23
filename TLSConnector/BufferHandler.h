@@ -133,6 +133,10 @@ struct BufferReader {
 	const byte* data() const {
 		return &(*m_begin);
 	}
+
+	const byte* posPtr() const {
+		return &(*m_pos);
+	}
 	
 private:
 	const std::vector<byte>::const_iterator m_begin;

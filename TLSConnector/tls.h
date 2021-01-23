@@ -533,37 +533,39 @@ private:
 		return outBuf;
 	}
 
-	std::vector<byte> decrypt(const std::vector<byte>& data, const byte messageType, const std::vector<byte>& iv) {
+	std::vector<byte> decryptRecord(BufferReader record, const uint16_t recordType) {
+		const std::vector<byte> iv = record.readArrayRaw(connectionData.cipher.blockSize);
+
 		ULONG outSize = 0;
-		NTSTATUS status = BCryptDecrypt(connectionData.recvKey, (PUCHAR)data.data(), data.size(), NULL, (PUCHAR)iv.data(), iv.size(), NULL, 0, &outSize, 0);
+		NTSTATUS status = BCryptDecrypt(connectionData.recvKey, (PUCHAR)record.posPtr(), record.bufferSize() - iv.size(), NULL, (PUCHAR)iv.data(), iv.size(), NULL, 0, &outSize, 0);
 		if (status != 0) {
 			std::runtime_error("could not decrypt data");
 		}
 		std::vector<byte> outBuf(outSize, 0);
-		status = BCryptDecrypt(connectionData.recvKey, (PUCHAR)data.data(), data.size(), NULL, (PUCHAR)iv.data(), iv.size(), outBuf.data(), outBuf.size(), &outSize, 0);
+		status = BCryptDecrypt(connectionData.recvKey, (PUCHAR)record.posPtr(), record.bufferSize() - iv.size(), NULL, (PUCHAR)iv.data(), iv.size(), outBuf.data(), outBuf.size(), &outSize, 0);
 		if (status != 0) {
 			std::runtime_error("could not decrypt data");
 		}
 
 		//remove padding
 		const auto paddingLength = outBuf.back();
-		outBuf.resize(outBuf.size() - (paddingLength+1));
+		outBuf.resize(outBuf.size() - (paddingLength + 1));
 
-		const size_t macSize = 20; //hash size for HMAC-SHA1
+		const size_t macSize = connectionData.cipher.macSize;
 		const size_t payloadSize = outBuf.size() - macSize;
 		const std::vector<byte> payload(outBuf.begin(), outBuf.begin() + payloadSize);
 
 		//MAC
 		{
-			const std::vector<byte> mac(outBuf.end()-macSize, outBuf.end());
+			const std::vector<byte> mac(outBuf.end() - macSize, outBuf.end());
 
 			//CHECK MAC
-			HMAC hmac(connectionData.cipher.hmacAlgo); //BCRYPT_SHA1_ALGORITHM
+			HMAC hmac(connectionData.cipher.hmacAlgo);
 			hmac.setSecret(connectionData.serverMac);
 
 			BufferBuilder macInput;
 			macInput.putU64(connectionData.recv_seq_num);
-			macInput.put(messageType); //message type
+			macInput.put(recordType); //message type
 			macInput.putArray({ 3, 3 }); //version, TLS 1.2
 			macInput.putU16(payloadSize);
 
@@ -574,12 +576,6 @@ private:
 		}
 
 		return payload;
-	}
-
-	std::vector<byte> decryptRecord(BufferReader record, const uint16_t recordType) {
-		const std::vector<byte> iv = record.readArrayRaw(connectionData.cipher.blockSize); //16
-		const auto decryptData = record.readArrayRaw(record.bufferSize() - iv.size());
-		return decrypt(decryptData, recordType, iv);
 	}
 
 	void sendClientKeyExchange(const std::vector<byte>& publicKey, HandshakeData* handshake) {
@@ -600,7 +596,7 @@ private:
 	}
 
 	void sendClientFinish(HandshakeData* handshake) {
-		const size_t iv_size = connectionData.cipher.blockSize; //record_iv_length = block_size = 16 for AES
+		const size_t iv_size = connectionData.cipher.blockSize; //record_iv_length = block_size
 		const auto iv = getRandomData(iv_size);
 
 		BufferBuilder buf;
@@ -642,14 +638,12 @@ private:
 		}
 
 		//compute verify data
-		{
-			const auto handshakeHash = handshake->handshakeHash->finish();
-			handshake->handshakeHash.reset(nullptr);
-			const auto computedVerify = prf("server finished", handshakeHash, verifyData.bufferSize(), connectionData.masterSecret);
+		const auto handshakeHash = handshake->handshakeHash->finish();
+		handshake->handshakeHash.reset(nullptr);
+		const auto computedVerify = prf("server finished", handshakeHash, verifyData.bufferSize(), connectionData.masterSecret);
 
-			if (!std::equal(computedVerify.begin(), computedVerify.end(), verifyData.data())) {
-				throw std::runtime_error("verify data corrupted");
-			}
+		if (!std::equal(computedVerify.begin(), computedVerify.end(), verifyData.data())) {
+			throw std::runtime_error("verify data corrupted");
 		}
 
 	}
