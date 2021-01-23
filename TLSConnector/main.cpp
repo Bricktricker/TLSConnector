@@ -54,8 +54,15 @@ int main() {
 
 	freeaddrinfo(result);
 
-	TLSConnector tls(connectedSocket);
-	tls.connect(URL);
+	try
+	{
+		TLSConnector tls(connectedSocket);
+		tls.connect(URL);
+	}
+	catch (const std::exception& e)
+	{
+		std::cerr << e.what() << '\n';
+	}
 
 	closesocket(connectedSocket);
 	WSACleanup();
