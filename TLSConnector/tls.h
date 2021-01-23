@@ -452,7 +452,7 @@ private:
 			}
 			if (encKeySize > 0) {
 				BCRYPT_ALG_HANDLE aesAlgorithm;
-				NTSTATUS status = BCryptOpenAlgorithmProvider(&aesAlgorithm, BCRYPT_AES_ALGORITHM, NULL, 0);
+				status = BCryptOpenAlgorithmProvider(&aesAlgorithm, BCRYPT_AES_ALGORITHM, NULL, 0);
 				if (status != 0) {
 					throw std::runtime_error("could not open AES algorithm");
 				}
@@ -534,7 +534,7 @@ private:
 		return outBuf;
 	}
 
-	std::vector<byte> decryptRecord(BufferReader record, const uint16_t recordType) {
+	std::vector<byte> decryptRecord(BufferReader record, const uint8_t recordType) {
 		const std::vector<byte> iv = record.readArrayRaw(connectionData.cipher.blockSize);
 
 		ULONG outSize = 0;
@@ -649,7 +649,7 @@ private:
 
 			BufferBuilder encBuf;
 			encBuf.putArray(iv);
-			const auto encryptedData = encrypt(data, type, iv); //handshake record type
+			const auto encryptedData = encrypt(data, type, iv);
 			encBuf.putArray(encryptedData);
 
 			buf.putU16(encBuf.size());
@@ -741,7 +741,7 @@ private:
 			if (handshake->handshakeHash && !connectionData.serverEncryption) {
 				handshake->handshakeHash->addData(recordReader.data(), recordReader.bufferSize());
 			}
-			const byte handshakeType = recordReader.read();
+			const size_t handshakeType = recordReader.read();
 			const size_t handshakeSize = recordReader.readU24();
 			BufferReader handshakeData = recordReader.readArray(handshakeSize);
 
@@ -797,9 +797,9 @@ private:
 		}
 	}
 
-	void hexdump(const void *ptr, const int buflen) const {
+	void hexdump(const void *ptr, const size_t buflen) const {
 		unsigned char *buf = (unsigned char*)ptr;
-		int i, j;
+		size_t i, j;
 		for (i = 0; i < buflen; i += 16) {
 			printf("%06x: ", i);
 			for (j = 0; j < 16; j++)

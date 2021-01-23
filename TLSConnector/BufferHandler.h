@@ -69,30 +69,30 @@ struct BufferReader {
 	explicit BufferReader(const std::vector<byte>::const_iterator _begin, const std::vector<byte>::const_iterator _end) : m_begin(_begin), m_pos(m_begin), m_end(_end) {};
 	~BufferReader() = default;
 
-	size_t read() {
+	byte read() {
 		const auto v = *m_pos;
-		m_pos++;
+		++m_pos;
 		return v;
 	}
 
-	size_t readU16() {
-		const size_t first = read();
-		const size_t second = read();
+	uint16_t readU16() {
+		const uint16_t first = read();
+		const uint16_t second = read();
 		return (first << 8) | second;
 	}
 
-	size_t readU24() {
-		const size_t first = read();
-		const size_t second = read();
-		const size_t third = read();
+	uint32_t readU24() {
+		const uint32_t first = read();
+		const uint32_t second = read();
+		const uint32_t third = read();
 		return (first << 16) | (second << 8) | third;
 	}
 
-	size_t readU32() {
-		const size_t first = read();
-		const size_t second = read();
-		const size_t third = read();
-		const size_t fourth = read();
+	uint32_t readU32() {
+		const uint32_t first = read();
+		const uint32_t second = read();
+		const uint32_t third = read();
+		const uint32_t fourth = read();
 		return (first << 24) | (second << 16) | (third << 8) | fourth;
 	}
 
