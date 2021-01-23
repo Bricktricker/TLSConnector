@@ -65,11 +65,14 @@ private:
 };
 
 struct BufferReader {
-	explicit BufferReader(const std::vector<byte>& buf) : m_pos(0U), m_buf(buf) {};
+	explicit BufferReader(const std::vector<byte>& buf) : m_begin(buf.begin()), m_pos(m_begin), m_end(buf.end()) {};
+	explicit BufferReader(const std::vector<byte>::const_iterator _begin, const std::vector<byte>::const_iterator _end) : m_begin(_begin), m_pos(m_begin), m_end(_end) {};
 	~BufferReader() = default;
 
 	size_t read() {
-		return m_buf.at(m_pos++);
+		const auto v = *m_pos;
+		m_pos++;
+		return v;
 	}
 
 	size_t readU16() {
@@ -97,41 +100,42 @@ struct BufferReader {
 		if (length > remaining()) {
 			throw std::out_of_range("readArray out of bounds");
 		}
-		const std::vector<byte> tmp(begin(m_buf) + m_pos, begin(m_buf) + m_pos + length);
+		const auto begin_array = m_pos;
 		m_pos += length;
-		return BufferReader(tmp);
+		return BufferReader(begin_array, m_end);
 	}
 
 	std::vector<byte> readArrayRaw(const size_t length) {
 		if (length > remaining()) {
 			throw std::out_of_range("readArrayRaw out of bounds");
 		}
-		const std::vector<byte> tmp(begin(m_buf) + m_pos, begin(m_buf) + m_pos + length);
+		const std::vector<byte> tmp(m_pos, m_pos + length);
 		m_pos += length;
 		return tmp;
 	}
 
 	void skip(const size_t num) {
+		if (num > remaining()) {
+			throw std::out_of_range("skip out of bounds");
+		}
 		m_pos += num;
 	}
 
 	size_t remaining() const {
-		return m_buf.size() - m_pos;
-	}
-
-	size_t pos() const noexcept {
-		return m_pos;
+		return std::distance(m_pos, m_end);
 	}
 
 	size_t bufferSize() const {
-		return m_buf.size();
+		return std::distance(m_begin, m_end);
 	}
 
-	const std::vector<byte> data() const {
-		return m_buf;
+	//returns a pointer to the BEGINNING of the given buffer, not the current position
+	const byte* data() const {
+		return &(*m_begin);
 	}
-
+	
 private:
-	size_t m_pos;
-	const std::vector<byte> m_buf;
+	const std::vector<byte>::const_iterator m_begin;
+	std::vector<byte>::const_iterator m_pos;
+	const std::vector<byte>::const_iterator m_end;
 };

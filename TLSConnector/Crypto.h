@@ -128,7 +128,11 @@ public:
 	}
 
 	void addData(const std::vector<byte>& buffer) {
-		NTSTATUS status = BCryptHashData(hashHandle, (PUCHAR)buffer.data(), static_cast<ULONG>(buffer.size()), 0);
+		addData(buffer.data(), buffer.size());
+	}
+
+	void addData(const byte* buf, const size_t size) {
+		NTSTATUS status = BCryptHashData(hashHandle, (PUCHAR)buf, static_cast<ULONG>(size), 0);
 		if (status != 0) {
 			throw std::runtime_error("could not hash data");
 		}

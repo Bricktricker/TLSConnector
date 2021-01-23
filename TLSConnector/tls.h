@@ -249,10 +249,10 @@ private:
 		handshake->handshakeHash->addData(getClientHello(handshake));
 		BufferBuilder helloBuilder;
 		helloBuilder.put(0x02); //server hello record
-		helloBuilder.putU24(helloBuffer.data().size());
+		helloBuilder.putU24(helloBuffer.bufferSize());
 
 		handshake->handshakeHash->addData(helloBuilder.data());
-		handshake->handshakeHash->addData(helloBuffer.data());
+		handshake->handshakeHash->addData(helloBuffer.data(), helloBuffer.bufferSize());
 	}
 
 	void receiveCertificate(HandshakeData* handshake, BufferReader handshakeBuffer, const size_t tlsVersion) {
@@ -647,7 +647,7 @@ private:
 			handshake->handshakeHash.reset(nullptr);
 			const auto computedVerify = prf("server finished", handshakeHash, verifyData.bufferSize(), connectionData.masterSecret);
 
-			if (computedVerify != verifyData.data()) {
+			if (!std::equal(computedVerify.begin(), computedVerify.end(), verifyData.data())) {
 				throw std::runtime_error("verify data corrupted");
 			}
 		}
@@ -732,7 +732,7 @@ private:
 
 		if (type == 0x16) { //handshake message
 			if (handshake->handshakeHash && !connectionData.encryptionOn) {
-				handshake->handshakeHash->addData(recordReader.data());
+				handshake->handshakeHash->addData(recordReader.data(), recordReader.bufferSize());
 			}
 			const byte handshakeType = recordReader.read();
 			const size_t handshakeSize = recordReader.readU24();
