@@ -58,6 +58,10 @@ int main() {
 	{
 		TLSConnector tls(connectedSocket);
 		tls.connect(URL);
+		tls.sendEncrypted("PING");
+		const auto retData = tls.receiveEncrypted();
+		std::string_view retStr((const char*)retData.data(), retData.size());
+		std::cout << retStr << '\n';
 	}
 	catch (const std::exception& e)
 	{

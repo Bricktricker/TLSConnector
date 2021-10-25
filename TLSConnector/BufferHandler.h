@@ -1,6 +1,23 @@
 #pragma once
 #include <vector>
 
+struct BufferWrapper {
+	explicit BufferWrapper(const byte* buf, const size_t size) : m_buf(buf), m_size(size) {}
+	explicit BufferWrapper(const std::vector<byte>& vec) : m_buf(vec.data()), m_size(vec.size()) {}
+
+	const byte* data() const noexcept {
+		return m_buf;
+	}
+
+	size_t size() const noexcept {
+		return m_size;
+	}
+
+private:
+	const byte* m_buf;
+	const size_t m_size;
+};
+
 struct BufferBuilder {
 	explicit BufferBuilder() = default;
 	~BufferBuilder() = default;
@@ -52,6 +69,10 @@ struct BufferBuilder {
 		m_buf.insert(end(m_buf), start, start + length);
 	}
 
+	void putArray(const BufferWrapper wrapper) {
+		m_buf.insert(end(m_buf), wrapper.data(), wrapper.data() + wrapper.size());
+	}
+
 	const size_t size() const noexcept {
 		return m_buf.size();
 	}
@@ -60,13 +81,18 @@ struct BufferBuilder {
 		return m_buf;
 	}
 
+	BufferWrapper wrapper() const {
+		return BufferWrapper(m_buf);
+	}
+
 private:
 	std::vector<byte> m_buf;
 };
 
 struct BufferReader {
-	explicit BufferReader(const std::vector<byte>& buf) : m_begin(buf.begin()), m_pos(m_begin), m_end(buf.end()) {};
-	explicit BufferReader(const std::vector<byte>::const_iterator _begin, const std::vector<byte>::const_iterator _end) : m_begin(_begin), m_pos(m_begin), m_end(_end) {};
+	explicit BufferReader(const std::vector<byte>& buf) : m_begin(buf.data()), m_pos(buf.data()), m_end(buf.data() + buf.size()) {};
+	explicit BufferReader(const BufferWrapper wrapper) : m_begin(wrapper.data()), m_pos(wrapper.data()), m_end(wrapper.data() + wrapper.size()) {};
+	explicit BufferReader(const byte* begin, const byte* end) : m_begin(begin), m_pos(begin), m_end(end) {};
 	~BufferReader() = default;
 
 	byte read() {
@@ -139,7 +165,8 @@ struct BufferReader {
 	}
 	
 private:
-	const std::vector<byte>::const_iterator m_begin;
-	std::vector<byte>::const_iterator m_pos;
-	const std::vector<byte>::const_iterator m_end;
+	const byte* m_begin;
+	byte const* m_pos;
+	const byte* m_end;
 };
+

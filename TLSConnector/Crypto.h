@@ -36,8 +36,8 @@ public:
 	template <typename ... Args>
 	std::vector<byte> getHash(Args&& ... args) {
 		assert(hashHandle != nullptr);
-		const std::vector<byte> bufferArray[] = { args... };
-		for (const std::vector<byte>& buffer : bufferArray) {
+		const BufferWrapper bufferArray[] = { args... };
+		for (const auto& buffer : bufferArray) {
 			NTSTATUS status = BCryptHashData(hashHandle, (PUCHAR)buffer.data(), buffer.size(), 0);
 			if (status != 0) {
 				throw std::runtime_error("could not hash data");
