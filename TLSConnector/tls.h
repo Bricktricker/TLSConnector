@@ -56,20 +56,23 @@ class TLSConnector {
 		std::vector<byte> clientRandom;
 		std::vector<byte> serverRandom;
 		std::vector<byte> serverPublickey;
-
-		std::vector<byte> serverPublicKey;
 		std::unique_ptr<RUNNING_HASH> handshakeHash;
 		const std::string host;
-		const std::array<std::pair<uint16_t, Cipher>, 2> ciphers {{
-					//format: PRF_HASH, MAC size AES key size (bytes), block size, HMAC algorithm
+
+		const std::array<std::pair<uint16_t, Cipher>, 4> ciphers {{
+					//format: PRF_HASH, MAC size, AES key size (bytes), block size, HMAC algorithm
+			{0xc028, { BCRYPT_SHA384_ALGORITHM, 48, 32, 16, BCRYPT_SHA384_ALGORITHM}}, //TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA384
+			{0xc027, { BCRYPT_SHA256_ALGORITHM, 32, 16, 16, BCRYPT_SHA256_ALGORITHM }}, //TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA256
+			{0xc014, { BCRYPT_SHA256_ALGORITHM, 20, 32, 16, BCRYPT_SHA1_ALGORITHM}}, //TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA
 			{0xc013, { BCRYPT_SHA256_ALGORITHM, 20, 16, 16, BCRYPT_SHA1_ALGORITHM }}, //TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA
-			{0xc014, { BCRYPT_SHA256_ALGORITHM, 20, 32, 16, BCRYPT_SHA1_ALGORITHM}} //TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA
 		}};
 	};
 
 	struct ConnectionData {
 		ConnectionData()
-			: cipher(nullptr, 0, 0, 0, nullptr) //dummy cipher
+			: cipher(nullptr, 0, 0, 0, nullptr), //dummy cipher
+			sendKey(nullptr),
+			recvKey(nullptr)
 		{}
 
 		Cipher cipher;
@@ -92,7 +95,9 @@ class TLSConnector {
 
 public:
 	explicit TLSConnector(const SOCKET socket) : m_socket(socket) {}
-	~TLSConnector() = default;
+	~TLSConnector() {
+		destroyKeys();
+	}
 
 	void connect(const std::string& host) {
 		HandshakeData handshake(host);
@@ -162,6 +167,18 @@ public:
 	void closeEncryption() {
 		const std::array<byte, 2> recordContent{ 0x01, 0x00 };
 		sendRecord(0x15, 0x3, BufferWrapper(recordContent.data(), recordContent.size()));
+		destroyKeys();
+	}
+
+	void destroyKeys() {
+		if (connectionData.sendKey != nullptr) {
+			BCryptDestroyKey(connectionData.sendKey);
+			connectionData.sendKey = nullptr;
+		}
+		if (connectionData.recvKey != nullptr) {
+			BCryptDestroyKey(connectionData.recvKey);
+			connectionData.recvKey = nullptr;
+		}
 	}
 
 private:
@@ -192,7 +209,7 @@ private:
 		buf.put(0); //session id (no session)
 
 		buf.putU16(handshake->ciphers.size() * sizeof(uint16_t));
-		for (const auto c : handshake->ciphers) {
+		for (const auto& c : handshake->ciphers) {
 			buf.putU16(c.first);
 		}
 
@@ -353,7 +370,7 @@ private:
 	std::vector<byte> prf(const std::string& label, const BufferWrapper seed, const size_t outputLength, const std::vector<byte>& masterSecret) {
 		const BufferWrapper labelBuf((byte*)label.data(), label.size());
 		
-		HMAC hmac(connectionData.cipher.prfHash); //BCRYPT_SHA256_ALGORITHM
+		HMAC hmac(connectionData.cipher.prfHash);
 		hmac.setSecret(masterSecret);
 
 		std::vector<byte> outBuffer;

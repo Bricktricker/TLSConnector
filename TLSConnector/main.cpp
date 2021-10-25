@@ -8,7 +8,7 @@
 #pragma comment (lib, "Ws2_32.lib")
 #pragma comment (lib, "Bcrypt.lib")
 
-#define URL "google.com"
+#define URL "localhost"
 
 // https://stackoverflow.com/questions/874134/find-out-if-string-ends-with-another-string-in-c
 static bool endsWith(std::string_view str, std::string_view suffix) {
@@ -69,7 +69,7 @@ int main() {
 			const auto partData = tls.receiveEncryptedStr();
 			std::cout << partData;
 			fullData += partData;
-		} while (!endsWith(fullData, "\r\n\r\n"));
+		} while (!endsWith(fullData, "\r\n\r\n") && !endsWith(fullData, "\n\n"));
 		tls.closeEncryption();
 	}
 	catch (const std::exception& e)
