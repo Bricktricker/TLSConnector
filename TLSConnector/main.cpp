@@ -8,7 +8,12 @@
 #pragma comment (lib, "Ws2_32.lib")
 #pragma comment (lib, "Bcrypt.lib")
 
-#define URL "localhost"
+#define URL "google.com"
+
+// https://stackoverflow.com/questions/874134/find-out-if-string-ends-with-another-string-in-c
+static bool endsWith(std::string_view str, std::string_view suffix) {
+	return str.size() >= suffix.size() && 0 == str.compare(str.size() - suffix.size(), suffix.size(), suffix);
+}
 
 int main() {
 	WSADATA wsaData;
@@ -58,10 +63,14 @@ int main() {
 	{
 		TLSConnector tls(connectedSocket);
 		tls.connect(URL);
-		tls.sendEncrypted("PING");
-		const auto retData = tls.receiveEncrypted();
-		std::string_view retStr((const char*)retData.data(), retData.size());
-		std::cout << retStr << '\n';
+		tls.sendEncrypted("GET / HTTP/1.1\r\nHost: www.google.com\r\n\r\n");
+		std::string fullData;
+		do {
+			const auto partData = tls.receiveEncryptedStr();
+			std::cout << partData;
+			fullData += partData;
+		} while (!endsWith(fullData, "\r\n\r\n"));
+		tls.closeEncryption();
 	}
 	catch (const std::exception& e)
 	{

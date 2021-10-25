@@ -154,6 +154,16 @@ public:
 		return recordVec;
 	}
 
+	std::string receiveEncryptedStr() {
+		const auto data = receiveEncrypted();
+		return std::string(reinterpret_cast<const char*>(data.data()), data.size());
+	}
+
+	void closeEncryption() {
+		const std::array<byte, 2> recordContent{ 0x01, 0x00 };
+		sendRecord(0x15, 0x3, BufferWrapper(recordContent.data(), recordContent.size()));
+	}
+
 private:
 	const SOCKET m_socket;
 
@@ -747,7 +757,7 @@ private:
 		handleRecordInternal(BufferWrapper(recordVec), handshake, type, tlsVersion);
 	}
 
-	[[nodiscard]] std::vector<byte> receiveRecord() {
+	[[nodiscard]] std::vector<byte> receiveRecord() const {
 		byte header[5]{ 0 };
 		size_t bytesReceived = 0;
 		do {
