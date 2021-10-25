@@ -38,7 +38,7 @@ public:
 		assert(hashHandle != nullptr);
 		const BufferWrapper bufferArray[] = { args... };
 		for (const auto& buffer : bufferArray) {
-			NTSTATUS status = BCryptHashData(hashHandle, (PUCHAR)buffer.data(), buffer.size(), 0);
+			NTSTATUS status = BCryptHashData(hashHandle, (PUCHAR)buffer.data(), static_cast<ULONG>(buffer.size()), 0);
 			if (status != 0) {
 				throw std::runtime_error("could not hash data");
 			}
@@ -51,7 +51,7 @@ public:
 		}
 
 		std::vector<byte> outBuffer(hashSize, 0);
-		status = BCryptFinishHash(hashHandle, (PUCHAR)outBuffer.data(), outBuffer.size(), 0);
+		status = BCryptFinishHash(hashHandle, (PUCHAR)outBuffer.data(), static_cast<ULONG>(outBuffer.size()), 0);
 		if (status != 0) {
 			throw std::runtime_error("could not hash data");
 		}

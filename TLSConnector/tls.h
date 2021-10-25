@@ -416,14 +416,14 @@ private:
 		{
 			BufferBuilder publicKeyBuf;
 			publicKeyBuf.putU32(htonl(BCRYPT_ECDH_PUBLIC_GENERIC_MAGIC));
-			publicKeyBuf.putU32(htonl(handshake->serverPublickey.size()));
+			publicKeyBuf.putU32(htonl(static_cast<u_long>(handshake->serverPublickey.size())));
 			publicKeyBuf.putArray(handshake->serverPublickey);
 
 			//expand buffer with zeros to a size of 0x48 bytes.
 			std::vector<byte> tmp(0x48 - publicKeyBuf.size(), 0);
 			publicKeyBuf.putArray(tmp);
 
-			status = BCryptImportKeyPair(hAlg, NULL, BCRYPT_ECCPUBLIC_BLOB, &serverKeyHandle, (PUCHAR)publicKeyBuf.data().data(), publicKeyBuf.size(), 0);
+			status = BCryptImportKeyPair(hAlg, NULL, BCRYPT_ECCPUBLIC_BLOB, &serverKeyHandle, (PUCHAR)publicKeyBuf.data().data(), static_cast<ULONG>(publicKeyBuf.size()), 0);
 			if (status != 0) {
 				throw std::runtime_error("Could not import server public key");
 			}
@@ -440,7 +440,7 @@ private:
 
 		keyGenDescData[0].BufferType = KDF_TLS_PRF_LABEL;
 		const std::string masterSecretStr("master secret");
-		keyGenDescData[0].cbBuffer = masterSecretStr.size(); // 'master secret' length
+		keyGenDescData[0].cbBuffer = static_cast<ULONG>(masterSecretStr.size()); // 'master secret' length
 		keyGenDescData[0].pvBuffer = (PVOID)masterSecretStr.data();
 
 		std::vector<byte> seed;
@@ -448,7 +448,7 @@ private:
 		seed.insert(end(seed), begin(handshake->serverRandom), end(handshake->serverRandom));
 		assert(seed.size() == 64);
 		keyGenDescData[1].BufferType = KDF_TLS_PRF_SEED;
-		keyGenDescData[1].cbBuffer = seed.size();
+		keyGenDescData[1].cbBuffer = static_cast<ULONG>(seed.size());
 		keyGenDescData[1].pvBuffer = seed.data();
 
 		DWORD protocolVersion = 0x0303; // TLS1_2_PROTOCOL_VERSION
@@ -457,12 +457,12 @@ private:
 		keyGenDescData[2].pvBuffer = &protocolVersion;
 
 		keyGenDescData[3].BufferType = KDF_HASH_ALGORITHM;
-		keyGenDescData[3].cbBuffer = wcslen(connectionData.cipher.prfHash) * sizeof(WCHAR) + 2 + 1; // Length of 'SHA256' / 'SHA384'
+		keyGenDescData[3].cbBuffer = static_cast<ULONG>(wcslen(connectionData.cipher.prfHash) * sizeof(WCHAR) + 2 + 1); // Length of 'SHA256' / 'SHA384'
 		keyGenDescData[3].pvBuffer = (PVOID)connectionData.cipher.prfHash;
 
 		BCryptBufferDesc keyGenDesc;
 		keyGenDesc.ulVersion = BCRYPTBUFFER_VERSION;
-		keyGenDesc.cBuffers = keyGenDescData.size(); //Number of keyGenDescData elements
+		keyGenDesc.cBuffers = static_cast<ULONG>(keyGenDescData.size()); //Number of keyGenDescData elements
 		keyGenDesc.pBuffers = keyGenDescData.data();
 
 		ULONG bufferSize = 0;
@@ -473,7 +473,7 @@ private:
 
 		assert(bufferSize == 0x30);
 		connectionData.masterSecret.resize(bufferSize, 0);
-		status = BCryptDeriveKey(preMasterSecret, BCRYPT_KDF_TLS_PRF, &keyGenDesc, connectionData.masterSecret.data(), connectionData.masterSecret.size(), &bufferSize, 0);
+		status = BCryptDeriveKey(preMasterSecret, BCRYPT_KDF_TLS_PRF, &keyGenDesc, connectionData.masterSecret.data(), static_cast<ULONG>(connectionData.masterSecret.size()), &bufferSize, 0);
 		if (status != 0) {
 			throw std::runtime_error("Could not generate master secret");
 		}
@@ -509,7 +509,7 @@ private:
 
 				{
 					const auto keyData = reader.readArrayRaw(encKeySize);
-					status = BCryptGenerateSymmetricKey(aesAlgorithm, &connectionData.sendKey, NULL, 0, (PUCHAR)keyData.data(), keyData.size(), 0);
+					status = BCryptGenerateSymmetricKey(aesAlgorithm, &connectionData.sendKey, NULL, 0, (PUCHAR)keyData.data(), static_cast<ULONG>(keyData.size()), 0);
 					if (status != 0) {
 						throw std::runtime_error("could not import AES key");
 					}
@@ -517,7 +517,7 @@ private:
 
 				{
 					const auto keyData = reader.readArrayRaw(encKeySize);
-					status = BCryptGenerateSymmetricKey(aesAlgorithm, &connectionData.recvKey, NULL, 0, (PUCHAR)keyData.data(), keyData.size(), 0);
+					status = BCryptGenerateSymmetricKey(aesAlgorithm, &connectionData.recvKey, NULL, 0, (PUCHAR)keyData.data(), static_cast<ULONG>(keyData.size()), 0);
 					if (status != 0) {
 						throw std::runtime_error("could not import AES key");
 					}
@@ -567,12 +567,12 @@ private:
 		//https://docs.microsoft.com/en-us/windows/win32/api/bcrypt/nf-bcrypt-bcryptencrypt
 
 		ULONG outSize = 0;
-		NTSTATUS status = BCryptEncrypt(connectionData.sendKey, (PUCHAR)encryptContent.data().data(), encryptContent.size(), NULL, (PUCHAR)iv.data(), iv.size(), NULL, 0, &outSize, 0);
+		NTSTATUS status = BCryptEncrypt(connectionData.sendKey, (PUCHAR)encryptContent.data().data(), static_cast<ULONG>(encryptContent.size()), NULL, (PUCHAR)iv.data(), static_cast<ULONG>(iv.size()), NULL, 0, &outSize, 0);
 		if (status != 0) {
 			std::runtime_error("could not encrypt data");
 		}
 		std::vector<byte> outBuf(outSize, 0);
-		status = BCryptEncrypt(connectionData.sendKey, (PUCHAR)encryptContent.data().data(), encryptContent.size(), NULL, (PUCHAR)iv.data(), iv.size(), outBuf.data(), outBuf.size(), &outSize, 0);
+		status = BCryptEncrypt(connectionData.sendKey, (PUCHAR)encryptContent.data().data(), static_cast<ULONG>(encryptContent.size()), NULL, (PUCHAR)iv.data(), static_cast<ULONG>(iv.size()), outBuf.data(), static_cast<ULONG>(outBuf.size()), &outSize, 0);
 		if (status != 0) {
 			std::runtime_error("could not encrypt data");
 		}
@@ -584,12 +584,12 @@ private:
 		const std::vector<byte> iv = record.readArrayRaw(connectionData.cipher.blockSize);
 
 		ULONG outSize = 0;
-		NTSTATUS status = BCryptDecrypt(connectionData.recvKey, (PUCHAR)record.posPtr(), record.bufferSize() - iv.size(), NULL, (PUCHAR)iv.data(), iv.size(), NULL, 0, &outSize, 0);
+		NTSTATUS status = BCryptDecrypt(connectionData.recvKey, (PUCHAR)record.posPtr(), static_cast<ULONG>(record.bufferSize() - iv.size()), NULL, (PUCHAR)iv.data(), static_cast<ULONG>(iv.size()), NULL, 0, &outSize, 0);
 		if (status != 0) {
 			std::runtime_error("could not decrypt data");
 		}
 		std::vector<byte> outBuf(outSize, 0);
-		status = BCryptDecrypt(connectionData.recvKey, (PUCHAR)record.posPtr(), record.bufferSize() - iv.size(), NULL, (PUCHAR)iv.data(), iv.size(), outBuf.data(), outBuf.size(), &outSize, 0);
+		status = BCryptDecrypt(connectionData.recvKey, (PUCHAR)record.posPtr(), static_cast<ULONG>(record.bufferSize() - iv.size()), NULL, (PUCHAR)iv.data(), static_cast<ULONG>(iv.size()), outBuf.data(), static_cast<ULONG>(outBuf.size()), &outSize, 0);
 		if (status != 0) {
 			std::runtime_error("could not decrypt data");
 		}
@@ -730,7 +730,7 @@ private:
 	void sendData(const BufferWrapper data) const {
 		size_t bytesSend = 0;
 		do {
-			int result = send(m_socket, (char*)data.data() + bytesSend, data.size() - bytesSend, 0);
+			int result = send(m_socket, (char*)data.data() + bytesSend, static_cast<int>(data.size() - bytesSend), 0);
 			if (result < 0) {
 				std::cerr << "Error sending data: " << WSAGetLastError() << '\n';
 				throw std::runtime_error("error sending data");
@@ -777,7 +777,7 @@ private:
 		std::vector<byte> msgContent(msgLength, 0);
 		bytesReceived = 0;
 		do {
-			int status = recv(m_socket, (char*)msgContent.data() + bytesReceived, msgLength - bytesReceived, 0);
+			int status = recv(m_socket, (char*)msgContent.data() + bytesReceived, static_cast<int>(msgLength - bytesReceived), 0);
 			if (status == 0) {
 				throw std::runtime_error("Connection closed");
 			}
@@ -840,7 +840,7 @@ private:
 			throw std::runtime_error("Could not open random provider");
 		}
 
-		status = BCryptGenRandom(hAlg, buf.data(), length, 0);
+		status = BCryptGenRandom(hAlg, buf.data(), static_cast<ULONG>(length), 0);
 		if (status != 0) {
 			closeAlgorithm(hAlg);
 			throw std::runtime_error("Could not generate random data");
