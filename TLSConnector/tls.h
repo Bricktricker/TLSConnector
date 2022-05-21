@@ -73,8 +73,9 @@ class TLSConnector {
 		std::unique_ptr<RUNNING_HASH> handshakeHash;
 		const std::string host;
 
-		const std::array<std::pair<uint16_t, Cipher>, 5> ciphers {{
+		const std::array<std::pair<uint16_t, Cipher>, 6> ciphers {{
 					//format: PRF_HASH, MAC size, AES key size (bytes), explicit iv size (transmitted in enc packet), fixed iv size (derived from PRF), HMAC algorithm, AES mode
+			{0xc030, { BCRYPT_SHA384_ALGORITHM, 0, 32, 8, 4, BCRYPT_SHA256_ALGORITHM, Cipher::AesMode::GCM }},	//TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384
 			{0xc02f, { BCRYPT_SHA256_ALGORITHM, 0, 16, 8, 4, BCRYPT_SHA256_ALGORITHM, Cipher::AesMode::GCM }}, //TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256
 			{0xc028, { BCRYPT_SHA384_ALGORITHM, 48, 32, 16, 0, BCRYPT_SHA384_ALGORITHM, Cipher::AesMode::CBC }}, //TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA384
 			{0xc027, { BCRYPT_SHA256_ALGORITHM, 32, 16, 16, 0, BCRYPT_SHA256_ALGORITHM, Cipher::AesMode::CBC }}, //TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA256
