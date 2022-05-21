@@ -2,11 +2,13 @@
 #include <winsock2.h>
 #include <Windows.h>
 #include <bcrypt.h>
+//#include <ntstatus.h> // including this causes some macro redefinition warnings
 #include <string>
 #include <string_view>
 #include <vector>
 #include <array>
 #include <memory>
+#include <iterator>
 
 #include "BufferHandler.h"
 #include "Crypto.h"
@@ -26,17 +28,27 @@ https://tools.ietf.org/html/rfc5246
 class TLSConnector {
 
 	struct Cipher {
+
+		enum AesMode {
+			CBC,
+			GCM
+		};
+
 		Cipher(
 			const LPCWSTR _prfHash,
 			const size_t _macSize,
 			const size_t _aesKeySize,
-			const size_t _blockSize,
-			const LPCWSTR _hmacAlgo)
+			const size_t _explicitIvSize,
+			const size_t _fixedIvSize,
+			const LPCWSTR _hmacAlgo,
+			const AesMode _aesMode)
 			:	prfHash(_prfHash),
 				macSize(_macSize),
 				aesKeySize(_aesKeySize),
-				blockSize(_blockSize),
-				hmacAlgo(_hmacAlgo)
+				explicitIvSize(_explicitIvSize),
+				fixedIvSize(_fixedIvSize),
+				hmacAlgo(_hmacAlgo),
+				aesMode(_aesMode)
 		{}
 		Cipher(const Cipher&) = default;
 		Cipher& operator=(const Cipher&) = default;
@@ -44,8 +56,10 @@ class TLSConnector {
 		LPCWSTR prfHash;
 		size_t macSize;
 		size_t aesKeySize;
-		size_t blockSize;
+		size_t explicitIvSize;
+		size_t fixedIvSize;
 		LPCWSTR hmacAlgo;
+		AesMode aesMode;
 	};
 
 	struct HandshakeData {
@@ -59,18 +73,19 @@ class TLSConnector {
 		std::unique_ptr<RUNNING_HASH> handshakeHash;
 		const std::string host;
 
-		const std::array<std::pair<uint16_t, Cipher>, 4> ciphers {{
-					//format: PRF_HASH, MAC size, AES key size (bytes), block size, HMAC algorithm
-			{0xc028, { BCRYPT_SHA384_ALGORITHM, 48, 32, 16, BCRYPT_SHA384_ALGORITHM}}, //TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA384
-			{0xc027, { BCRYPT_SHA256_ALGORITHM, 32, 16, 16, BCRYPT_SHA256_ALGORITHM }}, //TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA256
-			{0xc014, { BCRYPT_SHA256_ALGORITHM, 20, 32, 16, BCRYPT_SHA1_ALGORITHM}}, //TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA
-			{0xc013, { BCRYPT_SHA256_ALGORITHM, 20, 16, 16, BCRYPT_SHA1_ALGORITHM }}, //TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA
+		const std::array<std::pair<uint16_t, Cipher>, 5> ciphers {{
+					//format: PRF_HASH, MAC size, AES key size (bytes), explicit iv size (transmitted in enc packet), fixed iv size (derived from PRF), HMAC algorithm, AES mode
+			{0xc02f, { BCRYPT_SHA256_ALGORITHM, 0, 16, 8, 4, BCRYPT_SHA256_ALGORITHM, Cipher::AesMode::GCM }}, //TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256
+			{0xc028, { BCRYPT_SHA384_ALGORITHM, 48, 32, 16, 0, BCRYPT_SHA384_ALGORITHM, Cipher::AesMode::CBC }}, //TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA384
+			{0xc027, { BCRYPT_SHA256_ALGORITHM, 32, 16, 16, 0, BCRYPT_SHA256_ALGORITHM, Cipher::AesMode::CBC }}, //TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA256
+			{0xc014, { BCRYPT_SHA256_ALGORITHM, 20, 32, 16, 0, BCRYPT_SHA1_ALGORITHM, Cipher::AesMode::CBC }}, //TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA
+			{0xc013, { BCRYPT_SHA256_ALGORITHM, 20, 16, 16, 0, BCRYPT_SHA1_ALGORITHM, Cipher::AesMode::CBC }}, //TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA
 		}};
 	};
 
 	struct ConnectionData {
 		ConnectionData()
-			: cipher(nullptr, 0, 0, 0, nullptr), //dummy cipher
+			: cipher(nullptr, 0, 0, 0, 0, nullptr, Cipher::AesMode::CBC), //dummy cipher
 			sendKey(nullptr),
 			recvKey(nullptr)
 		{}
@@ -111,9 +126,9 @@ public:
 		receiveAndHandleRecord(&handshake); //server certificate
 
 		if (true) { //uses (EC)DHE_ key exchange methods
-			receiveAndHandleRecord(&handshake);
+			receiveAndHandleRecord(&handshake); // sever key exchange
 		}
-		receiveAndHandleRecord(&handshake); //hello done
+		receiveAndHandleRecord(&handshake); //server hello done
 
 		const std::vector<byte> clientPublicKey = generateMasterSecret(&handshake);
 		sendClientKeyExchange(clientPublicKey, &handshake);
@@ -196,6 +211,7 @@ private:
 		}
 	}
 
+	// Sends the client hello message https://datatracker.ietf.org/doc/html/rfc5246#section-7.4.1.2
 	std::vector<byte> getClientHello(HandshakeData* handshake) {
 		BufferBuilder buf;
 
@@ -213,7 +229,7 @@ private:
 			buf.putU16(c.first);
 		}
 
-		//copmpression methods
+		//copmpression methods (No compression)
 		buf.putArray({1, 0});
 
 		//extensions
@@ -221,7 +237,7 @@ private:
 			BufferBuilder extBuf;
 
 			{
-				//SNI extension
+				//SNI extension https://datatracker.ietf.org/doc/html/rfc6066#page-6
 				extBuf.putArray({ 0, 0 }); //extension 'server name'
 				extBuf.putU16(handshake->host.size() + 5);
 				extBuf.putU16(handshake->host.size() + 3); //only entry length
@@ -234,7 +250,7 @@ private:
 			}
 
 			{
-				//signature algorithms extension
+				//signature algorithms extension https://datatracker.ietf.org/doc/html/rfc5246#section-7.4.1.4.1
 				extBuf.putArray({ 0x00, 0x0d }); //extension 'Signature Algorithms'
 				const byte signatureAlgos[] = {
 					0x04, 0x01, // RSA/PKCS1/SHA256
@@ -282,6 +298,7 @@ private:
 		return handshakeBuf.data();
 	}
 
+	// receives and parses the Server Hello message https://datatracker.ietf.org/doc/html/rfc5246#section-7.4.1.3
 	void receiveServerHello(HandshakeData* handshake, BufferReader helloBuffer, const size_t tlsVersion) {
 		if (tlsVersion != 0x0303) {
 			throw std::runtime_error("unexpected tls version");
@@ -318,7 +335,8 @@ private:
 		handshake->handshakeHash->addData(helloBuilder.data());
 		handshake->handshakeHash->addData(helloBuffer.data(), helloBuffer.bufferSize());
 	}
-
+	
+	// receives the server certificate. NOTE: This method does NOT check if the received certificate is valid https://datatracker.ietf.org/doc/html/rfc5246#section-7.4.2 
 	void receiveCertificate(HandshakeData* handshake, BufferReader handshakeBuffer, const size_t tlsVersion) {
 		if (tlsVersion != 0x0303) {
 			throw std::runtime_error("unexpected tls version");
@@ -334,6 +352,7 @@ private:
 		}
 	}
 
+	// receives the data for the key exchange https://datatracker.ietf.org/doc/html/rfc5246#section-7.4.3
 	void receiveKeyExchange(HandshakeData* handshake, BufferReader keyInfoBuffer, const size_t tlsVersion) {
 		if (tlsVersion != 0x0303) {
 			throw std::runtime_error("unexpected tls version");
@@ -351,13 +370,14 @@ private:
 		const size_t publicKeyLength = keyInfoBuffer.read();
 		handshake->serverPublickey = keyInfoBuffer.readArrayRaw(publicKeyLength);
 
-		//signature, not check in this implementation
-		keyInfoBuffer.skip(2); //SignatureAndHashAlgorithm (RFC5246 7.4.1.4.1)
+		//signature, not checked in this implementation
+		keyInfoBuffer.skip(2); //SignatureAndHashAlgorithm https://datatracker.ietf.org/doc/html/rfc5246#section-7.4.1.4.1
 		const size_t signatureLength = keyInfoBuffer.readU16();
 		keyInfoBuffer.skip(signatureLength);
 		assert(keyInfoBuffer.remaining() == 0);
 	}
 
+	// receives the Server Hello Done message https://datatracker.ietf.org/doc/html/rfc5246#section-7.4.5
 	void receiveHelloDone(HandshakeData* handshake, BufferReader handshakeBuffer, const size_t tlsVersion) {
 		if (tlsVersion != 0x0303) {
 			throw std::runtime_error("unexpected tls version");
@@ -367,7 +387,7 @@ private:
 		}
 	}
 
-	std::vector<byte> prf(const std::string& label, const BufferWrapper seed, const size_t outputLength, const std::vector<byte>& masterSecret) {
+	std::vector<byte> prf(const std::string_view label, const BufferWrapper seed, const size_t outputLength, const std::vector<byte>& masterSecret) {
 		const BufferWrapper labelBuf((byte*)label.data(), label.size());
 		
 		HMAC hmac(connectionData.cipher.prfHash);
@@ -453,10 +473,11 @@ private:
 			throw std::runtime_error("Could not generate pre master secret");
 		}
 
+		// generate master secret
 		std::array<BCryptBuffer, 4> keyGenDescData;
 
 		keyGenDescData[0].BufferType = KDF_TLS_PRF_LABEL;
-		const std::string masterSecretStr("master secret");
+		const std::string_view masterSecretStr("master secret");
 		keyGenDescData[0].cbBuffer = static_cast<ULONG>(masterSecretStr.size()); // 'master secret' length
 		keyGenDescData[0].pvBuffer = (PVOID)masterSecretStr.data();
 
@@ -494,6 +515,12 @@ private:
 		if (status != 0) {
 			throw std::runtime_error("Could not generate master secret");
 		}
+
+		status = BCryptDestroySecret(preMasterSecret);
+		preMasterSecret = NULL;
+		if (status != 0) {
+			throw std::runtime_error("Could not delete pre master secret");
+		}
 		
 		//https://github.com/NetworkState/cwitch/blob/55f8fabcf6cdf2f3afe9e9f26dcd8bd0e30a5db0/tls12.h#L88
 		//key expansion to generate macs and write keys
@@ -504,8 +531,8 @@ private:
 
 			const size_t macKeySize = connectionData.cipher.macSize; //mac key, 2x 20 bytes for SHA1 and 2x 32 bytes for SHA256. 0 for AES GCM mode!?
 			const size_t encKeySize = connectionData.cipher.aesKeySize; //enc_key_length, 2x 16 bytes for AES 128 and 2x 32 bytes for AES 256
-			const size_t ivLength = 0; //fixed_iv_length, 2x 16 bytes for GCM? 0 for AES_CBC?
-			const size_t expansionSize = 2 * macKeySize + 2 * encKeySize + 2 * ivLength;
+			const size_t fixedIvLength = connectionData.cipher.fixedIvSize; //fixed_iv_length, 2x 4bytes for AES-GCM
+			const size_t expansionSize = 2 * macKeySize + 2 * encKeySize + 2 * fixedIvLength;
 			const auto keyExpansion = prf("key expansion", seedPRF.wrapper(), expansionSize, connectionData.masterSecret);
 			BufferReader reader(keyExpansion);
 
@@ -519,9 +546,19 @@ private:
 				if (status != 0) {
 					throw std::runtime_error("could not open AES algorithm");
 				}
-				status = BCryptSetProperty(aesAlgorithm, BCRYPT_CHAINING_MODE, (PUCHAR)BCRYPT_CHAIN_MODE_CBC, sizeof(BCRYPT_CHAIN_MODE_CBC), 0);
+				const PUCHAR aesMode = (PUCHAR)(connectionData.cipher.aesMode == Cipher::AesMode::CBC ? BCRYPT_CHAIN_MODE_CBC : BCRYPT_CHAIN_MODE_GCM);
+				static_assert(sizeof(BCRYPT_CHAIN_MODE_CBC) == sizeof(BCRYPT_CHAIN_MODE_GCM), "Aes chain mode string size differ");
+				status = BCryptSetProperty(aesAlgorithm, BCRYPT_CHAINING_MODE, aesMode, sizeof(BCRYPT_CHAIN_MODE_CBC), 0);
 				if (status != 0) {
 					throw std::runtime_error("could not set caining mode");
+				}
+
+				if (connectionData.cipher.aesMode == Cipher::AesMode::GCM) {
+					BCRYPT_AUTH_TAG_LENGTHS_STRUCT tagLength;
+					ULONG bytesCopied;
+					status = BCryptGetProperty(aesAlgorithm, BCRYPT_AUTH_TAG_LENGTH, (PUCHAR)& tagLength, sizeof(tagLength), &bytesCopied, 0);
+
+					assert(tagLength.dwMaxLength == 16);
 				}
 
 				{
@@ -540,9 +577,9 @@ private:
 					}
 				}
 			}
-			if (ivLength > 0) {
-				connectionData.clientIV = reader.readArrayRaw(ivLength);
-				connectionData.serverIV = reader.readArrayRaw(ivLength);
+			if (fixedIvLength > 0) {
+				connectionData.clientIV = reader.readArrayRaw(fixedIvLength);
+				connectionData.serverIV = reader.readArrayRaw(fixedIvLength);
 			}
 
 		}
@@ -552,94 +589,194 @@ private:
 		return rawPublicKey;
 	}
 
-	std::vector<byte> encrypt(const BufferWrapper data, const byte messageType, const std::vector<byte>& iv) const {
-		BufferBuilder encryptContent;
-		encryptContent.putArray(data);
+	std::vector<byte> encrypt(const BufferWrapper& data, const byte messageType) const {
+		const size_t iv_size = connectionData.cipher.explicitIvSize;
+		auto iv = getRandomData(iv_size); // gets modified during encryption
 
-		//MAC
-		{
-			BufferBuilder macInput;
-			macInput.putU64(connectionData.send_seq_num);
-			macInput.put(messageType); //message type
-			macInput.putArray({3, 3}); //version, TLS 1.2
-			macInput.putU16(data.size());
+		BufferBuilder outBuf;
+		outBuf.putArray(iv);
+		if (connectionData.cipher.aesMode == Cipher::AesMode::CBC) {
 
-			HMAC hmac(connectionData.cipher.hmacAlgo);
-			hmac.setSecret(connectionData.clientMac);
-			const std::vector<byte> hash = hmac.getHash(macInput.wrapper(), data);
-			encryptContent.putArray(hash);
+			BufferBuilder encryptContent;
+			encryptContent.putArray(data);
+
+			//MAC
+			{
+				BufferBuilder macInput;
+				macInput.putU64(connectionData.send_seq_num);
+				macInput.put(messageType); //message type
+				macInput.putArray({ 3, 3 }); //version, TLS 1.2
+				macInput.putU16(data.size());
+
+				HMAC hmac(connectionData.cipher.hmacAlgo);
+				hmac.setSecret(connectionData.clientMac);
+				const std::vector<byte> hash = hmac.getHash(macInput.wrapper(), data);
+				encryptContent.putArray(hash);
+			}
+
+			//Padding
+			{
+				const size_t multipleBlockLength = (((encryptContent.size() + 1) + iv.size() - 1) / iv.size()) * iv.size(); //add 1 to encryptContent for the byte containing the padding length
+				assert(multipleBlockLength > encryptContent.size());
+				const byte paddingLength = static_cast<byte>(multipleBlockLength - encryptContent.size() - 1);
+				encryptContent.putArray(std::vector<byte>(paddingLength, paddingLength));
+				encryptContent.put(paddingLength);
+			}
+
+			//https://tools.ietf.org/html/rfc5246#section-6.2.3.2
+			//https://crypto.stackexchange.com/questions/50815/clarification-needed-in-tls-1-2-key-derivation-process
+			//https://docs.microsoft.com/en-us/windows/win32/api/bcrypt/nf-bcrypt-bcryptencrypt
+
+			ULONG outSize = 0;
+			NTSTATUS status = BCryptEncrypt(connectionData.sendKey, (PUCHAR)encryptContent.data().data(), static_cast<ULONG>(encryptContent.size()), NULL, (PUCHAR)iv.data(), static_cast<ULONG>(iv.size()), NULL, 0, &outSize, 0);
+			if (status != 0) {
+				std::runtime_error("could not encrypt data");
+			}
+
+			PUCHAR encStart = outBuf.reserve(outSize);
+			status = BCryptEncrypt(connectionData.sendKey, (PUCHAR)encryptContent.data().data(), static_cast<ULONG>(encryptContent.size()), NULL, (PUCHAR)iv.data(), static_cast<ULONG>(iv.size()), encStart, outSize, &outSize, 0);
+			if (status != 0) {
+				std::runtime_error("could not encrypt data");
+			}
+		}
+		else if (connectionData.cipher.aesMode == Cipher::AesMode::GCM) {
+			
+			BCRYPT_AUTHENTICATED_CIPHER_MODE_INFO aead;
+			BCRYPT_INIT_AUTH_MODE_INFO(aead);
+
+			BufferBuilder nonce;
+			nonce.putArray(connectionData.clientIV);
+			nonce.putArray(iv);
+
+			aead.pbNonce = nonce.data().data();
+			aead.cbNonce = static_cast<ULONG>(nonce.size()); // should be 12
+			assert(aead.cbNonce == 12);
+
+			BufferBuilder additionalData;
+			additionalData.putU64(connectionData.send_seq_num);
+			additionalData.put(messageType); //message type
+			additionalData.putArray({ 3, 3 }); //version, TLS 1.2
+			additionalData.putU16(data.size());
+
+			aead.pbAuthData = additionalData.data().data();
+			aead.cbAuthData = static_cast<ULONG>(additionalData.size());
+
+			ULONG outSize = 0;
+			NTSTATUS status = BCryptEncrypt(connectionData.sendKey, (PUCHAR)data.data(), static_cast<ULONG>(data.size()), &aead, NULL, 0, NULL, 0, &outSize, 0);
+			if (status != 0) {
+				std::runtime_error("could not encrypt data");
+			}
+
+			constexpr size_t tagLength = 16;
+			PUCHAR encStart = outBuf.reserve(outSize + tagLength);
+			aead.pbTag = encStart + outSize;
+			aead.cbTag = tagLength;
+
+			status = BCryptEncrypt(connectionData.sendKey, (PUCHAR)data.data(), static_cast<ULONG>(data.size()), &aead, NULL, 0, encStart, outSize, &outSize, 0);
+			if (status != 0) {
+				std::runtime_error("could not encrypt data");
+			}
+
+		}else {
+			std::runtime_error("Invalid aes cipher mode");
 		}
 
-		//Padding
-		{
-			const size_t multipleBlockLength = (((encryptContent.size() + 1) + iv.size() - 1) / iv.size()) * iv.size(); //add 1 to encryptContent for the byte containing the padding length
-			assert(multipleBlockLength > encryptContent.size());
-			const byte paddingLength = static_cast<byte>(multipleBlockLength - encryptContent.size() - 1);
-			encryptContent.putArray(std::vector<byte>(paddingLength, paddingLength));
-			encryptContent.put(paddingLength);
-		}
-
-		//https://tools.ietf.org/html/rfc5246#section-6.2.3.2
-		//https://crypto.stackexchange.com/questions/50815/clarification-needed-in-tls-1-2-key-derivation-process
-		//https://docs.microsoft.com/en-us/windows/win32/api/bcrypt/nf-bcrypt-bcryptencrypt
-
-		ULONG outSize = 0;
-		NTSTATUS status = BCryptEncrypt(connectionData.sendKey, (PUCHAR)encryptContent.data().data(), static_cast<ULONG>(encryptContent.size()), NULL, (PUCHAR)iv.data(), static_cast<ULONG>(iv.size()), NULL, 0, &outSize, 0);
-		if (status != 0) {
-			std::runtime_error("could not encrypt data");
-		}
-		std::vector<byte> outBuf(outSize, 0);
-		status = BCryptEncrypt(connectionData.sendKey, (PUCHAR)encryptContent.data().data(), static_cast<ULONG>(encryptContent.size()), NULL, (PUCHAR)iv.data(), static_cast<ULONG>(iv.size()), outBuf.data(), static_cast<ULONG>(outBuf.size()), &outSize, 0);
-		if (status != 0) {
-			std::runtime_error("could not encrypt data");
-		}
-
-		return outBuf;
+		return outBuf.data();
 	}
 
 	std::vector<byte> decryptRecord(BufferReader record, const uint8_t recordType) {
-		const std::vector<byte> iv = record.readArrayRaw(connectionData.cipher.blockSize);
+		const std::vector<byte> iv = record.readArrayRaw(connectionData.cipher.explicitIvSize);
 
-		ULONG outSize = 0;
-		NTSTATUS status = BCryptDecrypt(connectionData.recvKey, (PUCHAR)record.posPtr(), static_cast<ULONG>(record.bufferSize() - iv.size()), NULL, (PUCHAR)iv.data(), static_cast<ULONG>(iv.size()), NULL, 0, &outSize, 0);
-		if (status != 0) {
-			std::runtime_error("could not decrypt data");
-		}
-		std::vector<byte> outBuf(outSize, 0);
-		status = BCryptDecrypt(connectionData.recvKey, (PUCHAR)record.posPtr(), static_cast<ULONG>(record.bufferSize() - iv.size()), NULL, (PUCHAR)iv.data(), static_cast<ULONG>(iv.size()), outBuf.data(), static_cast<ULONG>(outBuf.size()), &outSize, 0);
-		if (status != 0) {
-			std::runtime_error("could not decrypt data");
-		}
-
-		//remove padding
-		const auto paddingLength = outBuf.back();
-		outBuf.resize(outBuf.size() - (paddingLength + 1));
-
-		const size_t macSize = connectionData.cipher.macSize;
-		const size_t payloadSize = outBuf.size() - macSize;
-		const std::vector<byte> payload(outBuf.begin(), outBuf.begin() + payloadSize);
-
-		//MAC
-		{
-			const auto macItr = outBuf.end() - macSize;
-
-			//CHECK MAC
-			HMAC hmac(connectionData.cipher.hmacAlgo);
-			hmac.setSecret(connectionData.serverMac);
-
-			BufferBuilder macInput;
-			macInput.putU64(connectionData.recv_seq_num);
-			macInput.put(recordType); //message type
-			macInput.putArray({ 3, 3 }); //version, TLS 1.2
-			macInput.putU16(payloadSize);
-
-			const auto computedMac = hmac.getHash(macInput.wrapper(), BufferWrapper(payload));
-			if (!std::equal(computedMac.begin(), computedMac.end(), macItr)) {
-				throw std::runtime_error("Received MAC is corrupted");
+		if (connectionData.cipher.aesMode == Cipher::AesMode::CBC) {
+			ULONG outSize = 0;
+			NTSTATUS status = BCryptDecrypt(connectionData.recvKey, (PUCHAR)record.posPtr(), static_cast<ULONG>(record.bufferSize() - iv.size()), NULL, (PUCHAR)iv.data(), static_cast<ULONG>(iv.size()), NULL, 0, &outSize, 0);
+			if (status != 0) {
+				std::runtime_error("could not decrypt data");
 			}
-		}
+			std::vector<byte> outBuf(outSize, 0);
+			status = BCryptDecrypt(connectionData.recvKey, (PUCHAR)record.posPtr(), static_cast<ULONG>(record.bufferSize() - iv.size()), NULL, (PUCHAR)iv.data(), static_cast<ULONG>(iv.size()), outBuf.data(), static_cast<ULONG>(outBuf.size()), &outSize, 0);
+			if (status != 0) {
+				std::runtime_error("could not decrypt data");
+			}
 
-		return payload;
+			//remove padding
+			const auto paddingLength = outBuf.back();
+			outBuf.resize(outBuf.size() - (paddingLength + 1));
+
+			const size_t macSize = connectionData.cipher.macSize;
+			const size_t payloadSize = outBuf.size() - macSize;
+			const std::vector<byte> payload(outBuf.begin(), outBuf.begin() + payloadSize);
+
+			//MAC
+			{
+				const auto macItr = outBuf.end() - macSize;
+
+				//CHECK MAC
+				HMAC hmac(connectionData.cipher.hmacAlgo);
+				hmac.setSecret(connectionData.serverMac);
+
+				BufferBuilder macInput;
+				macInput.putU64(connectionData.recv_seq_num);
+				macInput.put(recordType); //message type
+				macInput.putArray({ 3, 3 }); //version, TLS 1.2
+				macInput.putU16(payloadSize);
+
+				const auto computedMac = hmac.getHash(macInput.wrapper(), BufferWrapper(payload));
+				if (!std::equal(computedMac.begin(), computedMac.end(), macItr)) {
+					throw std::runtime_error("Received MAC is corrupted");
+				}
+			}
+
+			return payload;
+		}
+		else if(connectionData.cipher.aesMode == Cipher::AesMode::GCM) {
+
+			BCRYPT_AUTHENTICATED_CIPHER_MODE_INFO aead;
+			BCRYPT_INIT_AUTH_MODE_INFO(aead);
+
+			BufferBuilder nonce;
+			nonce.putArray(connectionData.serverIV);
+			nonce.putArray(iv);
+
+			aead.pbNonce = nonce.data().data();
+			aead.cbNonce = static_cast<ULONG>(nonce.size()); // should be 12
+			assert(aead.cbNonce == 12);
+
+			const size_t payloadSize = record.remaining() - 16;
+			BufferBuilder additionalData;
+			additionalData.putU64(connectionData.recv_seq_num);
+			additionalData.put(recordType); //message type
+			additionalData.putArray({ 3, 3 }); //version, TLS 1.2
+			additionalData.putU16(payloadSize);
+
+			aead.pbAuthData = additionalData.data().data();
+			aead.cbAuthData = static_cast<ULONG>(additionalData.size());
+
+			PUCHAR encBegin = (PUCHAR) record.posPtr();
+			record.skip(payloadSize);
+			aead.pbTag = (PUCHAR) record.posPtr();
+			aead.cbTag = 16;
+			assert(record.remaining() == aead.cbTag);
+
+			ULONG outSize = 0;
+			NTSTATUS status = BCryptDecrypt(connectionData.recvKey, encBegin, static_cast<ULONG>(payloadSize), &aead, NULL, 0, NULL, 0, &outSize, 0);
+			if (status != 0) {
+				std::runtime_error("could not decrypt data");
+			}
+
+			std::vector<byte> outBuf(outSize, 0);
+			status = BCryptDecrypt(connectionData.recvKey, encBegin, static_cast<ULONG>(payloadSize), &aead, NULL, 0, outBuf.data(), outSize, &outSize, 0);
+			if (status == ((NTSTATUS)0xC000A002L)) { // STATUS_AUTH_TAG_MISMATCH
+				throw std::runtime_error("Received MAC is corrupted");
+			}else if (status != 0) {
+				std::runtime_error("could not decrypt data");
+			}
+
+			return outBuf;
+
+		}else {
+			throw std::runtime_error("Invalid aes cipher mode");
+		}
 	}
 
 	void sendClientKeyExchange(const std::vector<byte>& publicKey, HandshakeData* handshake) {
@@ -708,12 +845,8 @@ private:
 		buf.putArray({3, subVersion }); //TLS version 1.subVersion
 
 		if (connectionData.clientEncryption) {
-			const size_t iv_size = connectionData.cipher.blockSize; //record_iv_length = block_size
-			const auto iv = getRandomData(iv_size);
-
 			BufferBuilder encBuf;
-			encBuf.putArray(iv);
-			const auto encryptedData = encrypt(data, type, iv);
+			const auto encryptedData = encrypt(data, type);
 			encBuf.putArray(encryptedData);
 
 			buf.putU16(encBuf.size());

@@ -73,11 +73,21 @@ struct BufferBuilder {
 		m_buf.insert(end(m_buf), wrapper.data(), wrapper.data() + wrapper.size());
 	}
 
+	byte* reserve(const size_t numBytes) {
+		const auto oldSize = m_buf.size();
+		m_buf.resize(oldSize + numBytes, 0);
+		return &m_buf[oldSize];
+	}
+
 	const size_t size() const noexcept {
 		return m_buf.size();
 	}
 
 	const std::vector<byte>& data() const {
+		return m_buf;
+	}
+
+	std::vector<byte>& data() {
 		return m_buf;
 	}
 

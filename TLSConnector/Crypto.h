@@ -87,7 +87,7 @@ public:
 	}
 
 	RUNNING_HASH(const RUNNING_HASH& other)
-		: algHandle(nullptr), hashHandle(nullptr), algo(other.algo) //, hashObject(other.hashObject.size())
+		: algHandle(nullptr), hashHandle(nullptr), algo(other.algo)
 	{
 		NTSTATUS status = BCryptOpenAlgorithmProvider(&algHandle, algo, NULL, BCRYPT_HASH_REUSABLE_FLAG);
 		if (status != 0) {
