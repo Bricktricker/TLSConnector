@@ -12,6 +12,7 @@
 
 #include "BufferHandler.h"
 #include "Crypto.h"
+#include "CertReader.h"
 
 //hexdump
 #include <ctype.h>
@@ -161,17 +162,19 @@ public:
 		const size_t tlsVersion = reader.readU16();
 		const size_t recordSize = reader.readU16();
 
-		if (type != 0x17) {
-			// no application data
-			throw std::runtime_error("Expected applicaion data");
-		}
-
 		auto recordVec = reader.readArrayRaw(recordSize);
 
 		if (connectionData.serverEncryption) {
 			recordVec = decryptRecord(BufferReader(recordVec), type);
 			connectionData.recv_seq_num++;
 		}
+
+		// TODO: check for type 0x15, if the server closes the connection (with a close notify)
+		if (type != 0x17) {
+			// no application data
+			throw std::runtime_error("Expected application data");
+		}
+
 		return recordVec;
 	}
 
@@ -348,7 +351,9 @@ private:
 			const size_t certLength = handshakeBuffer.readU24();
 			bytesHandled += 3;
 
-			handshakeBuffer.skip(certLength);
+			CertReader certReader(handshakeBuffer);
+			const auto cert = certReader.getCertificate();
+
 			bytesHandled += certLength;
 		}
 	}

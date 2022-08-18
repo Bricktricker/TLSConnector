@@ -29,5 +29,8 @@
     <ClInclude Include="Crypto.h">
       <Filter>Headerdateien</Filter>
     </ClInclude>
+    <ClInclude Include="CertReader.h">
+      <Filter>Headerdateien</Filter>
+    </ClInclude>
   </ItemGroup>
 </Project>

@@ -1,0 +1,122 @@
+TLS flow graph
+
+Client                                                      Server
+
+    +---------------------------+
+    |1. Client Hello            |
+    | - Client Random           |
+    | - Session ID              |
+    | - [Supported Ciphers]     |----------+----------------------->
+    | - [Extensions]            |          |
+    |    - SNI                  |          |
+    |    - Signature Algorithms |          |
+    |    - Renegotiation Info   |          |
+    |    - supported groups     |          |
+    +---------------------------+          |
+                                           |
+    +--------------------------------------+            +-------------------+
+    |                                                   |2. Server Hello    |
+    |                                                   | - Server Random   |
+    |   <---+-------------------------------------------| - Session ID      |
+    |       |                                           | - Selected Cipher |
+    |       |                                           | - [Extensions]    |
+    |       |                                           +-------------------+
+    |       |
+   (1.)    (2.)
+    v       v
++----------------------+
+| Global Hash Object   |<-(6./7.)-----------------+
+| - updated for every  |                          |
+|   message            |-------------->---------+ |
+| - gets created after |                        | |
+|   Cipher selection   |                        | |
++----------------------+                        | |
+             ^   ^     ^                        | |
+            (3.)(4.)  (5.)                      | |     +----------------------+
+             |   |     |                        | |     |3. Server certificate |
+        <----+------------------------------------------| - gets validated     |
+                 |     |                        | |     +----------------------+
+                 |     |                        | |         
+                 |     |                        | |         
+                 |     |                        | |     +------------------------------+
+                 |     |                        | |     | Server generates key pair    |
+                 |     |                        | |     | - only used for this session |
+                 |     |                        | |     +------------------------------+
+                 |     |                        | |        
+                 |     |                        | |     +---------------------------------+
+                 |     |                        | |     |4. Server Key Exchange           |
+                 |     |                        | |     | - Public key                    |
+                 |     |                        | |     | - Signature                     |
+        <-----+--+--------------------------------------|   - public key is signed        |
+              |        |                        | |     |     with server private         |
+              v        |                        | |     |     key. Check with certificate |
++------------------+   |                        | |     |     public key                  |
+|Server public key |   |                        | |     +---------------------------------+
++------------------+   |                        | |
+                       |                        | |
+                       |                        | |     +----------------------+
+        <--------------+--------------------------------| 5. Server Hello Done |
+                                                | |     +----------------------+
+                                                | |    
++------------------------------+                | |
+| Client generates key pair    |                | |
+| - only used for this session |                | |
++------------------------------+                | |
+                                                | |
++------------------------------------+          | |
+| Client generates premaster secret  |          | |
+|  - computed from server public key |          | |
+|   and client private key           |          v ^
++------------------------------------+          | |
+                                                | |
+https://datatracker.ietf.org/doc/html/rfc5246#section-8.1
++---------------------------------------+       | |
+| Client generates Master secret        |       | |
+| - Computed from the premaster secret, |       | |
+|   and the client/server random bytes  |       | |
++---------------------------------------+       | |
+                                                | |
+https://datatracker.ietf.org/doc/html/rfc5246#section-6.3
++------------------------------------------+    | |
+| Client does a key expansion using a PRF  |    | |
+| - uses the Master secret                 |    | |
+| - generates two mac_keys (client/server) |    | |
+| - generates two AES keys (client/server) |    | |
+| - generate tow IVs (client/server)       |    | |
++------------------------------------------+    | |
+                                                | |
+    +-------------------------------+           | |
+    | 6. Client change Cipher Spec  |           | |
+    | - client indicates encryption |---------------------------------->
+    |   started                     |           | |
+    +-------------------------------+           | |
+                                                | |
+    https://datatracker.ietf.org/doc/html/rfc5246#section-6.2.3.2
+    +-------------------------------+           | |
+    | 7. Client Handshake finished  |<----------+ |
+    | - First encrypted message     |             |
+    | - contains IV                 |             |
+    | - Encrypted Verify Data       |             |
+    |   - Verify computed from old  |-------------+-------------------->
+    |     message hashes            |                
+    +-------------------------------+                
+                                                     
+                                                        +-------------------------------+
+                                                        | 8. Server change Cipher Spec  |
+        <-----------------------------------------------| - server indicates encryption |
+                                                        |   started                     |
+                                                        +-------------------------------+
+                                                        
+                                                        +-------------------------------+
+                                                        | 9. Server Handshake finished  |
+                                                        | - contains IV                 |
+        <-----------------------------------------------| - Encrypted Verify Data       |
+                                                        |   - Verify computed from old  |
+                                                        |     message hashes            |
+                                                        +-------------------------------+
+    
+    +-------------------------------+
+    | 10. Client HTTP request       |
+    | - encrypted application data  |---------------------------------->
+    +-------------------------------+
+    

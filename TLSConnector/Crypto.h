@@ -74,11 +74,6 @@ public:
 		if (status != 0) {
 			throw std::runtime_error("Could not open HASH algorithm");
 		}
-		DWORD objSize, bytesWritten = 0;
-		status = BCryptGetProperty(algHandle, BCRYPT_OBJECT_LENGTH, (PBYTE)&objSize, sizeof(objSize), &bytesWritten, 0);
-		if (status != 0) {
-			throw std::runtime_error("Could not get hash size");
-		}
 
 		status = BCryptCreateHash(algHandle, &hashHandle, NULL, 0, NULL, 0, BCRYPT_HASH_REUSABLE_FLAG);
 		if (status != 0) {

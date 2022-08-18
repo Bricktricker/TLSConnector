@@ -1,5 +1,6 @@
 #pragma once
 #include <vector>
+#include <cassert>
 
 struct BufferWrapper {
 	explicit BufferWrapper(const byte* buf, const size_t size) : m_buf(buf), m_size(size) {}
@@ -100,9 +101,9 @@ private:
 };
 
 struct BufferReader {
-	explicit BufferReader(const std::vector<byte>& buf) : m_begin(buf.data()), m_pos(buf.data()), m_end(buf.data() + buf.size()) {};
-	explicit BufferReader(const BufferWrapper wrapper) : m_begin(wrapper.data()), m_pos(wrapper.data()), m_end(wrapper.data() + wrapper.size()) {};
-	explicit BufferReader(const byte* begin, const byte* end) : m_begin(begin), m_pos(begin), m_end(end) {};
+	explicit BufferReader(const std::vector<byte>& buf) : m_begin(buf.data()), m_pos(buf.data()), m_end(buf.data() + buf.size()), m_mark(nullptr) {};
+	explicit BufferReader(const BufferWrapper wrapper) : m_begin(wrapper.data()), m_pos(wrapper.data()), m_end(wrapper.data() + wrapper.size()), m_mark(nullptr) {};
+	explicit BufferReader(const byte* begin, const byte* end) : m_begin(begin), m_pos(begin), m_end(end), m_mark(nullptr) {};
 	~BufferReader() = default;
 
 	byte read() {
@@ -173,10 +174,20 @@ struct BufferReader {
 	const byte* posPtr() const {
 		return &(*m_pos);
 	}
+
+	void mark() {
+		m_mark = m_pos;
+	}
+
+	void reset() {
+		assert(m_mark != nullptr);
+		m_pos = m_mark;
+	}
 	
 private:
 	const byte* m_begin;
 	byte const* m_pos;
 	const byte* m_end;
+	byte const* m_mark;
 };
 

@@ -63,7 +63,10 @@ int main() {
 	{
 		TLSConnector tls(connectedSocket);
 		tls.connect(URL);
-		tls.sendEncrypted("GET / HTTP/1.1\r\nHost: www.google.com\r\n\r\n");
+		std::string req = "GET / HTTP/1.1\r\nHost: ";
+		req += URL;
+		req += "\r\n\r\n";
+		tls.sendEncrypted(req);
 		std::string fullData;
 		do {
 			const auto partData = tls.receiveEncryptedStr();
