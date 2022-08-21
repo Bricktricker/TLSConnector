@@ -17,7 +17,6 @@ public:
 
 	enum Algorithm {
 		SHA256,
-		SHA386,
 		SHA512,
 		RSA_ENCRYPTION
 	};
@@ -35,6 +34,8 @@ public:
 
 		Algorithm caAlgorithm;
 		std::vector<byte> caSignature;
+
+		std::vector<byte> signedHash;
 	};
 
 	CertReader(BufferReader& reader)
@@ -116,6 +117,7 @@ private:
 
 		// read TBSCertificate (the signed certificate data)
 		{
+			const byte* signedPartStart = m_reader.posPtr();
 			const IdentHeader tbsHeader = readHeader(certLength);
 			if (tbsHeader.tagClass != 0/*universal*/ || tbsHeader.isPrimitive || tbsHeader.tagType != 16/*sequence*/) {
 				// invalid TBSCertificate
@@ -164,6 +166,25 @@ private:
 
 			assert(tbsSize == 0);
 			certLength -= tbsHeader.tagLength;
+
+			const byte* signedPartEnd = m_reader.posPtr();
+
+			LPCWSTR hashAlgo = nullptr;
+			switch (m_certificate.caAlgorithm)
+			{
+			case Algorithm::SHA256:
+				hashAlgo = BCRYPT_SHA256_ALGORITHM;
+				break;
+			case Algorithm::SHA512:
+				hashAlgo = BCRYPT_SHA512_ALGORITHM;
+				break;
+			default:
+				throw std::runtime_error("Unsuported hash algorithm");
+			}
+
+			RUNNING_HASH hashFunc(hashAlgo);
+			hashFunc.addData(signedPartStart, signedPartEnd - signedPartStart);
+			m_certificate.signedHash = hashFunc.finish();
 		}
 
 		// read signature algorithm
