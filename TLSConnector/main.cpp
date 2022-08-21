@@ -8,7 +8,7 @@
 #pragma comment (lib, "Ws2_32.lib")
 #pragma comment (lib, "Bcrypt.lib")
 
-#define URL "localhost"
+#define URL "google.com"
 
 // https://stackoverflow.com/questions/874134/find-out-if-string-ends-with-another-string-in-c
 static bool endsWith(std::string_view str, std::string_view suffix) {

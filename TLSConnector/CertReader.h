@@ -1,13 +1,19 @@
 #pragma once
 #include "BufferHandler.h"
-#include <unordered_map>
 #include <iomanip>
 #include <sstream>
+#include <immintrin.h>
 
 class CertReader {
 public:
 
-	using Name_t = std::unordered_map<size_t, std::string>;
+	struct Name_t {
+		std::string countryName;
+		std::string stateOrProvinceName;
+		std::string organizationName;
+		std::string organizationalUnitName;
+		std::string commonName;
+	};
 
 	enum Algorithm {
 		SHA256,
@@ -183,11 +189,12 @@ private:
 			// invalid signature
 			throw std::runtime_error("Invalid signature type");
 		}
-		const auto algorithmOid = readBigValue(algorithmIdHeader.tagLength);
+		const uint32_t algorithmOid = hashBigValue(algorithmIdHeader.tagLength);
 		signatureLength -= algorithmIdHeader.tagLength;
 
 		const IdentHeader parametersHeader = readHeader(signatureLength);
 		if (parametersHeader.tagLength > 0) {
+			// TODO: Reader additional parameter for the algorithm
 			assert(false); // TODO: implement
 			m_reader.skip(parametersHeader.tagLength);
 			signatureLength -= parametersHeader.tagLength;
@@ -195,23 +202,17 @@ private:
 
 		bytesLeft -= algorithmHeader.tagLength;
 
-		// table of supported signature algorithms
-		constexpr std::array<std::pair<Algorithm, std::array<byte, 9>>, 4> algorithmOids = {{
-				{ Algorithm::SHA256, {0x2A, 0x86, 0x48, 0x86, 0xF7, 0x0D, 0x01, 0x01, 0x0B} }, // sha256WithRSAEncryption
-				{ Algorithm::SHA386, {0x2A, 0x86, 0x48, 0x86, 0xF7, 0x0D, 0x01, 0x01, 0x0C} }, // sha386WithRSAEncryption
-				{ Algorithm::SHA512, {0x2A, 0x86, 0x48, 0x86, 0xF7, 0x0D, 0x01, 0x01, 0x0D} },  // sha512WithRSAEncryption
-				{ Algorithm::RSA_ENCRYPTION, {0x2A, 0x86, 0x48, 0x86, 0xF7, 0x0D, 0x01, 0x01, 0x01} } // rsaEncryption
-		}};
-
-		const auto itr = std::find_if(begin(algorithmOids), end(algorithmOids), [&algorithmOid](const auto& v) {
-			return std::equal(algorithmOid.begin(), algorithmOid.end(), v.second.begin());
-		});
-		if (itr != end(algorithmOids)) {
-			return itr->first;
-		}else {
-			throw std::runtime_error("unsupported signature algorithm");
+		switch (algorithmOid)
+		{
+		case 148778961: // rsaEncryption
+			return Algorithm::RSA_ENCRYPTION;
+		case 1167974401: // sha512WithRSAEncryption
+			return Algorithm::SHA512;
+		case 1664878569: // sha256WithRSAEncryption
+			return Algorithm::SHA256;
+		default:
+			throw std::runtime_error("unsupported algorithm used");
 		}
-
 	}
 
 	Name_t readName(size_t& bytesLeft) {
@@ -237,7 +238,7 @@ private:
 			}
 			size_t sequenceLength = sequenceHeader.tagLength;
 
-			size_t oidIdentifier = 0;
+			uint32_t oidIdentifier = 0;
 			std::string value;
 
 			while (sequenceLength > 0) {
@@ -247,15 +248,33 @@ private:
 						throw std::runtime_error("Invalid OID type");
 					}
 					// https://embeddedinn.xyz/articles/tutorial/understanding-X.509-certificate-structure/#object-identifier-oid
-					const auto oid = readBigValue(header.tagLength);
-					assert(oid.size() <= 8);
-					oidIdentifier = *reinterpret_cast<const size_t*>(oid.data());
+					oidIdentifier = hashBigValue(header.tagLength);
 				}else {
 					value = readString(header);
 				}
 				sequenceLength -= header.tagLength;
 			}
-			entries.emplace(oidIdentifier, value);
+
+			switch (oidIdentifier)
+			{
+			case 1208742436:
+				entries.stateOrProvinceName = value;
+				break;
+			case 1532690896:
+				entries.organizationalUnitName = value;
+				break;
+			case 2838528723:
+				entries.organizationName = value;
+				break;
+			case 3514980639:
+				entries.commonName = value;
+				break;
+			case 3832761603:
+				entries.countryName = value;
+				break;
+			default:
+				throw std::runtime_error("Unexpected oid identifier for Name_t");
+			}
 
 			issuerLength -= sequenceHeader.tagLength;
 		}
@@ -374,6 +393,14 @@ private:
 			buffer[i] = m_reader.read();
 		}
 		return buffer;
+	}
+
+	uint32_t hashBigValue(const size_t numBytes) {
+		uint32_t hash = 0;
+		for (size_t i = 0; i < numBytes; i++) {
+			hash = _mm_crc32_u8(hash, m_reader.read());
+		}
+		return hash;
 	}
 
 	std::string readString(const IdentHeader& header) {
