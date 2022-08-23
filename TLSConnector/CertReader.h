@@ -1,42 +1,12 @@
 #pragma once
 #include "BufferHandler.h"
+#include "Certificate.h"
 #include <iomanip>
 #include <sstream>
 #include <immintrin.h>
 
 class CertReader {
 public:
-
-	struct Name_t {
-		std::string countryName;
-		std::string stateOrProvinceName;
-		std::string organizationName;
-		std::string organizationalUnitName;
-		std::string commonName;
-	};
-
-	enum Algorithm {
-		SHA256,
-		SHA512,
-		RSA_ENCRYPTION
-	};
-
-	struct Certificate
-	{
-		std::tm notBeforeValid;
-		std::tm notAfterValid;
-
-		Name_t subject;
-		Name_t issuer; // The one who signed this cert
-
-		Algorithm keyAlgorithm;
-		std::vector<byte> publicKey;
-
-		Algorithm caAlgorithm;
-		std::vector<byte> caSignature;
-
-		std::vector<byte> signedHash;
-	};
 
 	CertReader(BufferReader& reader)
 		: m_reader(reader)
@@ -159,9 +129,76 @@ private:
 			readPublicKey(tbsSize);
 
 			if (certificateVersion > 1 && tbsSize > 0) {
-				// skip the rest of the TBSCertificate. Is the issuerUniqueID, subjectUniqueID and/or the extensions. We don't need them
-				m_reader.skip(tbsSize);
-				tbsSize = 0;
+				// Read the three optional fields, we ignore issuerUniqueID and subjectUniqueID, but parse the extensions
+				while (tbsSize > 0) {
+					const auto header = readHeader(tbsSize);
+					if (header.tagClass != 2/*Context-specific*/ || header.isPrimitive) {
+						throw std::runtime_error("Unexpected field type");
+					}
+					if (header.tagType == 3 /*extensions*/) {
+						size_t extensionsLength = header.tagLength;
+
+						const auto extensionsSequenceHeader = readHeader(extensionsLength);
+						if (extensionsSequenceHeader.tagClass != 0/*universal*/ || extensionsSequenceHeader.isPrimitive || extensionsSequenceHeader.tagType != 16/*sequence*/) {
+							// invalid extension
+							throw std::runtime_error("Invalid extension sequence");
+						}
+						
+						// read all extensions
+						while (extensionsLength > 0) {
+							const auto extensionHeader = readHeader(extensionsLength);
+							if (extensionHeader.tagClass != 0/*universal*/ || extensionHeader.isPrimitive || extensionHeader.tagType != 16/*sequence*/) {
+								// invalid extension
+								throw std::runtime_error("Invalid extension type");
+							}
+
+							const uint32_t extensionOid = readHashedOid(extensionsLength);
+
+							// Critical field is optional, defaults to false
+							const bool isCritical = readBoolOptional(extensionsLength, false);
+
+							const auto contentHeader = readHeader(extensionsLength);
+							if (contentHeader.tagClass != 0/*universal*/ || contentHeader.tagType != 4/*octed string*/) {
+								// invalid octed string
+								throw std::runtime_error("Invalid octed string header");
+							}
+							size_t contentLength = contentHeader.tagLength;
+							extensionsLength -= contentLength;
+
+							switch (extensionOid)
+							{
+							case 1890530366: //basicConstraints
+								{
+								const auto constrainsHeader = readHeader(contentLength);
+								if (constrainsHeader.tagClass != 0/*universal*/ || constrainsHeader.isPrimitive || constrainsHeader.tagType != 16/*sequence*/) {
+									// invalid sequence header
+									throw std::runtime_error("Invalid basic constrains sequence header");
+								}
+								m_certificate.basicConstrainsExt.cA = readBoolOptional(contentLength, false);
+								if (m_certificate.basicConstrainsExt.cA) {
+									m_certificate.basicConstrainsExt.pathLenConstraint = static_cast<size_t>(-1);
+									if (contentLength > 0) {
+										m_certificate.basicConstrainsExt.pathLenConstraint = readInteger(contentLength);
+									}
+								}
+
+								}
+								assert(contentLength == 0);
+								break;
+							default:
+								if (isCritical) {
+									throw std::runtime_error("Unkown critical extension in certificate");
+								}
+								m_reader.skip(contentLength);
+								break;
+							}
+						}
+					}else {
+						// Skip issuerUniqueID and subjectUniqueID
+						m_reader.skip(header.tagLength);
+					}
+					tbsSize -= header.tagLength;
+				}
 			}
 
 			assert(tbsSize == 0);
@@ -205,13 +242,7 @@ private:
 		}
 		size_t signatureLength = algorithmHeader.tagLength;
 
-		const IdentHeader algorithmIdHeader = readHeader(signatureLength);
-		if (algorithmIdHeader.tagClass != 0/*universal*/ || !algorithmIdHeader.isPrimitive || algorithmIdHeader.tagType != 6/*object ident*/) {
-			// invalid signature
-			throw std::runtime_error("Invalid signature type");
-		}
-		const uint32_t algorithmOid = hashBigValue(algorithmIdHeader.tagLength);
-		signatureLength -= algorithmIdHeader.tagLength;
+		const uint32_t algorithmOid = readHashedOid(signatureLength);
 
 		const IdentHeader parametersHeader = readHeader(signatureLength);
 		if (parametersHeader.tagLength > 0) {
@@ -236,7 +267,7 @@ private:
 		}
 	}
 
-	Name_t readName(size_t& bytesLeft) {
+	CertEntity readName(size_t& bytesLeft) {
 		const IdentHeader issuerHeader = readHeader(bytesLeft);
 		if (issuerHeader.tagClass != 0/*universal*/ || issuerHeader.isPrimitive || issuerHeader.tagType != 16/*sequence*/) {
 			// invalid issuer
@@ -244,7 +275,7 @@ private:
 		}
 		size_t issuerLength = issuerHeader.tagLength;
 
-		Name_t entries;
+		CertEntity entries;
 		while (issuerLength > 0) {
 			const IdentHeader setHeader = readHeader(issuerLength);
 			if (setHeader.tagClass != 0/*universal*/ || setHeader.isPrimitive || setHeader.tagType != 17/*set*/) {
@@ -263,12 +294,12 @@ private:
 			std::string value;
 
 			while (sequenceLength > 0) {
-				const IdentHeader header = readHeader(sequenceLength); // The header for en OID or its value
+				m_reader.mark();
+				const IdentHeader header = readHeader(sequenceLength); // The header for an OID or its value
 				if (header.tagType == 6/*object ident*/) {
 					if (header.tagClass != 0/*universal*/ || !header.isPrimitive) {
 						throw std::runtime_error("Invalid OID type");
 					}
-					// https://embeddedinn.xyz/articles/tutorial/understanding-X.509-certificate-structure/#object-identifier-oid
 					oidIdentifier = hashBigValue(header.tagLength);
 				}else {
 					value = readString(header);
@@ -387,7 +418,6 @@ private:
 	}
 
 	size_t readInteger(size_t& bytesLeft) {
-
 		const IdentHeader header = readHeader(bytesLeft);
 		if (!header.isPrimitive || header.tagType != 2/*INTEGER*/) {
 			throw std::runtime_error("Unexpected identifier, expected INTEGER");
@@ -407,6 +437,40 @@ private:
 		return value;
 	}
 
+	bool readBool(size_t& bytesLeft) {
+		const IdentHeader header = readHeader(bytesLeft);
+		if (!header.isPrimitive || header.tagType !=1 /*BOOLEAN*/) {
+			throw std::runtime_error("Unexpected identifier, expected BOOLEAN");
+		}
+
+		if (bytesLeft < header.tagLength) {
+			throw std::runtime_error("Unexpected end of certificate");
+		}
+
+		size_t value = 0;
+		for (size_t i = 0; i < header.tagLength; i++) {
+			value <<= 8;
+			value |= m_reader.read();
+		}
+		bytesLeft -= header.tagLength;
+
+		return value != 0;
+	}
+
+	bool readBoolOptional(size_t& bytesLeft, const bool defaultVal) {
+		if (bytesLeft < 2) {
+			return defaultVal;
+		}
+		m_reader.mark();
+		size_t bytesLeftBackup = bytesLeft;
+		const auto maybeBoolHeader = readHeader(bytesLeftBackup);
+		m_reader.reset();
+		if (maybeBoolHeader.isPrimitive && maybeBoolHeader.tagType == 1 /*BOOLEAN*/) {
+			return readBool(bytesLeft);
+		}
+		return defaultVal;
+	}
+
 	template<typename Container = std::vector<byte>>
 	Container readBigValue(const size_t numBytes) {
 		Container buffer(numBytes, 0);
@@ -422,6 +486,17 @@ private:
 			hash = _mm_crc32_u8(hash, m_reader.read());
 		}
 		return hash;
+	}
+
+	uint32_t readHashedOid(size_t& bytesLeft) {
+		const auto oidHeader = readHeader(bytesLeft);
+		if (oidHeader.tagClass != 0/*universal*/ || !oidHeader.isPrimitive || oidHeader.tagType != 6/*object ident*/) {
+			// invalid oid header
+			throw std::runtime_error("Invalid oid header");
+		}
+
+		bytesLeft -= oidHeader.tagLength;
+		return hashBigValue(oidHeader.tagLength);
 	}
 
 	std::string readString(const IdentHeader& header) {

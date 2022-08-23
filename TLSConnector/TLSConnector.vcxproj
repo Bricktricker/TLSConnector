@@ -141,6 +141,7 @@
     </ClInclude>
     <ClInclude Include="CertReader.h" />
     <ClInclude Include="Crypto.h" />
+    <ClInclude Include="Certificate.h" />
     <ClInclude Include="tls.h">
       <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
       </ExcludedFromBuild>
