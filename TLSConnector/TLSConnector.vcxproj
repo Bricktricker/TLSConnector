@@ -139,6 +139,7 @@
       <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
       </ExcludedFromBuild>
     </ClInclude>
+    <ClInclude Include="CertificateStore.h" />
     <ClInclude Include="CertReader.h" />
     <ClInclude Include="Crypto.h" />
     <ClInclude Include="Certificate.h" />

@@ -32,6 +32,9 @@
     <ClInclude Include="CertReader.h">
       <Filter>Headerdateien</Filter>
     </ClInclude>
+    <ClInclude Include="CertificateStore.h">
+      <Filter>Headerdateien</Filter>
+    </ClInclude>
     <ClInclude Include="Certificate.h">
       <Filter>Headerdateien</Filter>
     </ClInclude>

@@ -12,7 +12,7 @@
 
 #include "BufferHandler.h"
 #include "Crypto.h"
-#include "CertReader.h"
+#include "CertificateStore.h"
 
 //hexdump
 #include <ctype.h>
@@ -116,6 +116,10 @@ public:
 		destroyKeys();
 	}
 
+	void setCertificateStore(const CertificateStore* certStore) {
+		m_certStore = certStore;
+	}
+
 	void connect(const std::string& host) {
 		HandshakeData handshake(host);
 
@@ -202,8 +206,8 @@ public:
 
 private:
 	const SOCKET m_socket;
-
 	ConnectionData connectionData;
+	const CertificateStore* m_certStore;
 
 	Cipher getCipher(const HandshakeData* handshake, const uint16_t chiperId) {
 		const auto itr = std::find_if(begin(handshake->ciphers), end(handshake->ciphers), [&chiperId](const auto &v) { return v.first == chiperId; });
