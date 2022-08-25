@@ -1,5 +1,6 @@
 #pragma once
 #include <vector>
+#include <bcrypt.h>
 
 struct CertEntity {
 	std::string countryName;
@@ -20,6 +21,14 @@ struct BasicConstraints {
 	bool cA;
 };
 
+struct KeyUsage {
+	enum UsageFlags : byte {
+		SIGNATURE = (1 << 0),
+		CERT_SIGNING = (1 << 1)
+	};
+	byte usage;
+};
+
 struct Certificate
 {
 	std::tm notBeforeValid;
@@ -29,7 +38,7 @@ struct Certificate
 	CertEntity issuer; // The one who signed this cert
 
 	Algorithm keyAlgorithm;
-	std::vector<byte> publicKey;
+	BCRYPT_KEY_HANDLE publicKey;
 
 	Algorithm caAlgorithm;
 	std::vector<byte> caSignature;
@@ -38,4 +47,5 @@ struct Certificate
 
 	// Extensions
 	BasicConstraints basicConstrainsExt;
+	KeyUsage keyUsageExt;
 };

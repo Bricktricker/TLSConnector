@@ -185,6 +185,16 @@ private:
 								}
 								assert(contentLength == 0);
 								break;
+							case 766655617: // keyUsage
+								{
+								m_certificate.keyUsageExt.usage = 0;
+								const auto keyUsageFlags = readBitString(contentLength);
+								assert(!keyUsageFlags.empty());
+								m_certificate.keyUsageExt.usage |= keyUsageFlags.front() & (1 << 0) ? KeyUsage::SIGNATURE : 0;
+								m_certificate.keyUsageExt.usage |= keyUsageFlags.front() & (1 << 5) ? KeyUsage::CERT_SIGNING : 0;
+								}
+								assert(contentLength == 0);
+								break;
 							default:
 								if (isCritical) {
 									throw std::runtime_error("Unkown critical extension in certificate");
@@ -229,6 +239,7 @@ private:
 		if (m_certificate.caAlgorithm != caSignatureAlgorithm) {
 			throw std::runtime_error("Diffrent signature algorithms found");
 		}
+
 		m_certificate.caSignature = readBitString(certLength);
 		assert(certLength == 0);
 	}
@@ -339,7 +350,6 @@ private:
 	void readValidity(size_t& bytesLeft) {
 		const IdentHeader validityHeader = readHeader(bytesLeft);
 		if (validityHeader.tagClass != 0/*universal*/ || validityHeader.isPrimitive || validityHeader.tagType != 16/*sequence*/) {
-			// invalid issuer
 			throw std::runtime_error("Invalid validity type");
 		}
 
@@ -409,12 +419,65 @@ private:
 	void readPublicKey(size_t& bytesLeft) {
 		const IdentHeader keyHeader = readHeader(bytesLeft);
 		if (keyHeader.tagClass != 0/*universal*/ || keyHeader.isPrimitive || keyHeader.tagType != 16/*sequence*/) {
-			// invalid SubjectPublicKeyInfo
 			throw std::runtime_error("Invalid SubjectPublicKeyInfo type");
 		}
 
 		m_certificate.keyAlgorithm = readAlgorithm(bytesLeft);
-		m_certificate.publicKey = readBitString(bytesLeft);
+		assert(m_certificate.keyAlgorithm == Algorithm::RSA_ENCRYPTION);
+
+		const IdentHeader bitStringHeader = readHeader(bytesLeft);
+		if (bitStringHeader.tagClass != 0/*universal*/ || bitStringHeader.tagType != 3/*BIT STRING*/) {
+			throw std::runtime_error("Invalid BIT STRING type");
+		}
+
+		// read the 'unused bits' in the bitstring that encodes the public key. There should be no unused bits
+		const auto unusedBits = m_reader.read(); bytesLeft--;
+		assert(unusedBits == 0);
+
+		const IdentHeader sequenceHeader = readHeader(bytesLeft);
+		if (sequenceHeader.tagClass != 0/*universal*/ || sequenceHeader.tagType != 16/*Sequence*/) {
+			throw std::runtime_error("Invalid sequence type in public key");
+		}
+
+		const IdentHeader modulusHeader = readHeader(bytesLeft);
+		if (modulusHeader.tagClass != 0/*universal*/ || modulusHeader.tagType != 2/*INTEGER*/) {
+			throw std::runtime_error("Invalid integer type in modulus");
+		}
+		auto modulus = readBigValue(modulusHeader.tagLength);
+		bytesLeft -= modulusHeader.tagLength;
+
+		while ((modulus.size() % 0x10) && modulus.at(0) == 0) {
+			modulus.erase(modulus.begin());
+		}
+
+		const IdentHeader expHeader = readHeader(bytesLeft);
+		if (expHeader.tagClass != 0/*universal*/ || expHeader.tagType != 2/*INTEGER*/) {
+			throw std::runtime_error("Invalid integer type in exponent");
+		}
+		const auto exponent = readBigValue(expHeader.tagLength);
+		bytesLeft -= expHeader.tagLength;
+
+		BCRYPT_ALG_HANDLE algHandle = nullptr;
+		NTSTATUS status = BCryptOpenAlgorithmProvider(&algHandle, BCRYPT_RSA_ALGORITHM, NULL, 0);
+		if (status != 0 || algHandle == nullptr) {
+			throw std::runtime_error("Could not open RSA provider");
+		}
+		std::vector<byte> blobData(sizeof(BCRYPT_RSAKEY_BLOB) + modulus.size() + exponent.size());
+		BCRYPT_RSAKEY_BLOB* blob = reinterpret_cast<BCRYPT_RSAKEY_BLOB*>(blobData.data());
+		const auto expItr = std::copy(modulus.begin(), modulus.end(), std::next(blobData.begin(), sizeof(BCRYPT_RSAKEY_BLOB)));
+		std::copy(exponent.begin(), exponent.end(), expItr);
+		blob->Magic = BCRYPT_RSAPUBLIC_MAGIC;
+		blob->BitLength = static_cast<ULONG>(modulus.size() * 8);
+		blob->cbModulus = static_cast<ULONG>(modulus.size());
+		blob->cbPublicExp = static_cast<ULONG>(exponent.size());
+		blob->cbPrime1 = 0;
+		blob->cbPrime2 = 0;
+
+		status = BCryptImportKeyPair(algHandle, nullptr, BCRYPT_PUBLIC_KEY_BLOB, &m_certificate.publicKey, blobData.data(), static_cast<ULONG>(blobData.size()), 0);
+		BCryptCloseAlgorithmProvider(algHandle, 0);
+		if (status != 0) {
+			throw std::runtime_error("Could not import public key");
+		}
 	}
 
 	size_t readInteger(size_t& bytesLeft) {
@@ -530,13 +593,13 @@ private:
 		bitString.erase(bitString.begin()); // remove 'unusedBits' byte from key
 		if (unusedBits != 0) {
 			// we need to remove the last 'unusedBits' from the key
-			// TODO: implement
+			// We simply shift the last byte in 'bitString' by 'unusedBits' to the right
 			/*
 			Key Bytes:		06 6e 5d c0 (06 => last 6 Bits are unused)
 			Raw key bits:	01101110 01011101 11000000
 			Desired bits:	01101110 01011101 11
 			*/
-			assert(false);
+			bitString.back() >>= unusedBits;
 		}
 
 		return bitString;
