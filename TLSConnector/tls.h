@@ -350,14 +350,27 @@ private:
 		}
 		const size_t certificatesLength = handshakeBuffer.readU24();
 		size_t bytesHandled = 0;
+		std::vector<Certificate> sendCerts;
+
 		while (bytesHandled < certificatesLength) {
 			const size_t certLength = handshakeBuffer.readU24();
 			bytesHandled += 3;
 
 			CertReader certReader(handshakeBuffer);
-			const auto cert = certReader.getCertificate();
+			sendCerts.push_back(certReader.getCertificate());
 
 			bytesHandled += certLength;
+		}
+
+		// Validate the certificates if we have a certificate store
+		const bool isValid = m_certStore != nullptr && !m_certStore->validateCertChain(sendCerts);
+		std::for_each(sendCerts.begin(), sendCerts.end(), [](const Certificate& cert) {
+			const auto status = BCryptDestroyKey(cert.publicKey);
+			assert(status == 0);
+		});
+			
+		if (!isValid) {
+			throw std::runtime_error("Could not validate certificate");
 		}
 	}
 

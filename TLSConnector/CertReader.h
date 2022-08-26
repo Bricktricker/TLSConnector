@@ -464,8 +464,8 @@ private:
 		}
 		std::vector<byte> blobData(sizeof(BCRYPT_RSAKEY_BLOB) + modulus.size() + exponent.size());
 		BCRYPT_RSAKEY_BLOB* blob = reinterpret_cast<BCRYPT_RSAKEY_BLOB*>(blobData.data());
-		const auto expItr = std::copy(modulus.begin(), modulus.end(), std::next(blobData.begin(), sizeof(BCRYPT_RSAKEY_BLOB)));
-		std::copy(exponent.begin(), exponent.end(), expItr);
+		const auto modItr = std::copy(exponent.begin(), exponent.end(), std::next(blobData.begin(), sizeof(BCRYPT_RSAKEY_BLOB)));
+		std::copy(modulus.begin(), modulus.end(), modItr);
 		blob->Magic = BCRYPT_RSAPUBLIC_MAGIC;
 		blob->BitLength = static_cast<ULONG>(modulus.size() * 8);
 		blob->cbModulus = static_cast<ULONG>(modulus.size());
