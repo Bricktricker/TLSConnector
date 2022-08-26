@@ -119,16 +119,12 @@ public:
 	}
 
 	bool validateCertChain(const std::vector<Certificate>& certs) const {
-		const std::time_t currentTime = time(nullptr) - 30000000;
+		const std::time_t currentTime = time(nullptr);
 		for (size_t i = 0; i < certs.size(); i++) {
 			 const Certificate& cert = certs[i];
 			
 			// Check if certificate validity timestamp is in currentTime range
-			std::tm notBeforeValid = cert.notBeforeValid;
-			std::tm notAfterValid = cert.notAfterValid;
-			const std::time_t beginTime = std::mktime(&notBeforeValid);
-			const std::time_t endTime = std::mktime(&notAfterValid);
-			if (beginTime > currentTime || endTime < currentTime) {
+			if (cert.notBeforeValid > currentTime || cert.notAfterValid < currentTime) {
 				return false;
 			}
 			
@@ -139,18 +135,11 @@ public:
 				return false;
 			}
 
-			// Check if current validity range is in next cert range
-			std::tm nextNotBeforeValid = nextCert->notBeforeValid;
-			std::tm nextNotAfterValid = nextCert->notAfterValid;
-			const std::time_t nextBeginTime = std::mktime(&nextNotBeforeValid);
-			const std::time_t nextEndTime = std::mktime(&nextNotAfterValid);
-			if (nextBeginTime > beginTime || nextEndTime < endTime) {
+			// Check if current certs validity range is in next cert range
+			if (nextCert->notBeforeValid > cert.notBeforeValid || nextCert->notAfterValid < cert.notAfterValid) {
 				return false;
 			}
-			// Check if nextCertificate is still valid
-			if (nextBeginTime > currentTime || nextEndTime < currentTime) {
-				return false;
-			}
+			// We don't need to check if nextCert is valid, it will always be valid, if the above three checks pass
 
 			// Validate signature
 			BCRYPT_PKCS1_PADDING_INFO paddingInfo = {};

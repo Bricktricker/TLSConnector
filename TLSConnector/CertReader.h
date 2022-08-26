@@ -320,6 +320,9 @@ private:
 
 			switch (oidIdentifier)
 			{
+			case 370724352: //localityName
+				entries.localityName = value;
+				break;
 			case 1208742436:
 				entries.stateOrProvinceName = value;
 				break;
@@ -387,26 +390,19 @@ private:
 					if (timeStr.at(10) != 'Z') {
 						timeObj.tm_sec = (timeStr.at(10) - '0') * 10 + (timeStr.at(11) - '0');
 					}
-
-					// normalize:
-					const time_t when = std::mktime(&timeObj);
-					if (localtime_s(&timeObj, &when) != 0) {
-						throw std::runtime_error("localtime_s failed");
-					}
-
 				}else {
 					// times with offsets
 					// TODO: implement
 					assert(false);
 				}
 
-
-				return timeObj;
+				// normalize:
+				return std::mktime(&timeObj);
 			}
 			else if (dateHeader.tagType == 24/*GeneralizedTime*/) {
 				// TODO: Implement
 				assert(false);
-				return std::tm{};
+				return std::time_t{};
 			}else {
 				throw std::runtime_error("Invalid time type");
 			}

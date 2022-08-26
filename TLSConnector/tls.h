@@ -363,7 +363,7 @@ private:
 		}
 
 		// Validate the certificates if we have a certificate store
-		const bool isValid = m_certStore != nullptr && !m_certStore->validateCertChain(sendCerts);
+		const bool isValid = m_certStore == nullptr || m_certStore->validateCertChain(sendCerts);
 		std::for_each(sendCerts.begin(), sendCerts.end(), [](const Certificate& cert) {
 			const auto status = BCryptDestroyKey(cert.publicKey);
 			assert(status == 0);

@@ -5,6 +5,7 @@
 struct CertEntity {
 	std::string countryName;
 	std::string stateOrProvinceName;
+	std::string localityName;
 	std::string organizationName;
 	std::string organizationalUnitName;
 	std::string commonName;
@@ -31,8 +32,8 @@ struct KeyUsage {
 
 struct Certificate
 {
-	std::tm notBeforeValid;
-	std::tm notAfterValid;
+	std::time_t notBeforeValid;
+	std::time_t notAfterValid;
 
 	CertEntity subject;
 	CertEntity issuer; // The one who signed this cert
