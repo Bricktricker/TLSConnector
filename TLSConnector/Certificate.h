@@ -13,6 +13,7 @@ struct CertEntity {
 
 enum Algorithm {
 	SHA256,
+	SHA384,
 	SHA512,
 	RSA_ENCRYPTION
 };

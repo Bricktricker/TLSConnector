@@ -343,7 +343,7 @@ private:
 		handshake->handshakeHash->addData(helloBuffer.data(), helloBuffer.bufferSize());
 	}
 	
-	// receives the server certificate. NOTE: This method does NOT check if the received certificate is valid https://datatracker.ietf.org/doc/html/rfc5246#section-7.4.2 
+	// receives the server certificate https://datatracker.ietf.org/doc/html/rfc5246#section-7.4.2 
 	void receiveCertificate(HandshakeData* handshake, BufferReader handshakeBuffer, const size_t tlsVersion) {
 		if (tlsVersion != 0x0303) {
 			throw std::runtime_error("unexpected tls version");
@@ -363,7 +363,7 @@ private:
 		}
 
 		// Validate the certificates if we have a certificate store
-		const bool isValid = m_certStore == nullptr || m_certStore->validateCertChain(sendCerts);
+		const bool isValid = m_certStore == nullptr || m_certStore->validateCertChain(sendCerts, handshake->host);
 		std::for_each(sendCerts.begin(), sendCerts.end(), [](const Certificate& cert) {
 			const auto status = BCryptDestroyKey(cert.publicKey);
 			assert(status == 0);

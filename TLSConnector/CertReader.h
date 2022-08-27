@@ -222,6 +222,9 @@ private:
 			case Algorithm::SHA256:
 				hashAlgo = BCRYPT_SHA256_ALGORITHM;
 				break;
+			case Algorithm::SHA384:
+				hashAlgo = BCRYPT_SHA384_ALGORITHM;
+				break;
 			case Algorithm::SHA512:
 				hashAlgo = BCRYPT_SHA512_ALGORITHM;
 				break;
@@ -255,12 +258,14 @@ private:
 
 		const uint32_t algorithmOid = readHashedOid(signatureLength);
 
-		const IdentHeader parametersHeader = readHeader(signatureLength);
-		if (parametersHeader.tagLength > 0) {
-			// TODO: Reader additional parameter for the algorithm
-			assert(false); // TODO: implement
-			m_reader.skip(parametersHeader.tagLength);
-			signatureLength -= parametersHeader.tagLength;
+		if (signatureLength > 0) {
+			const IdentHeader parametersHeader = readHeader(signatureLength);
+			if (parametersHeader.tagLength > 0) {
+				// TODO: Reader additional parameter for the algorithm
+				assert(false); // TODO: implement
+				m_reader.skip(parametersHeader.tagLength);
+				signatureLength -= parametersHeader.tagLength;
+			}
 		}
 
 		bytesLeft -= algorithmHeader.tagLength;
@@ -269,10 +274,18 @@ private:
 		{
 		case 148778961: // rsaEncryption
 			return Algorithm::RSA_ENCRYPTION;
+		case 442154664: // ecdsa-with-SHA256
+			throw std::runtime_error("ECC algorithms are currently unuspported in certificates");
 		case 1167974401: // sha512WithRSAEncryption
 			return Algorithm::SHA512;
 		case 1664878569: // sha256WithRSAEncryption
 			return Algorithm::SHA256;
+		case 3086377730: // sha384WithRSAEncryption
+			return Algorithm::SHA384;
+		case 3477387470: // sha1WithRSAEncryption
+			throw std::runtime_error("No support for SHA1");
+		case 3895541163: // ecdsa-with-SHA384
+			throw std::runtime_error("ECC algorithms are currently unuspported in certificates");
 		default:
 			throw std::runtime_error("unsupported algorithm used");
 		}
@@ -320,7 +333,7 @@ private:
 
 			switch (oidIdentifier)
 			{
-			case 370724352: //localityName
+			case 370724352:
 				entries.localityName = value;
 				break;
 			case 1208742436:
@@ -328,6 +341,9 @@ private:
 				break;
 			case 1532690896:
 				entries.organizationalUnitName = value;
+				break;
+			case 2513103977: // emailAddress
+				// We ignore email address in the certificate entity
 				break;
 			case 2838528723:
 				entries.organizationName = value;
@@ -337,6 +353,9 @@ private:
 				break;
 			case 3832761603:
 				entries.countryName = value;
+				break;
+			case 4146314999: // serialNumber
+				// We ignore serial number in the certificate entity
 				break;
 			default:
 				throw std::runtime_error("Unexpected oid identifier for Name_t");
@@ -358,54 +377,60 @@ private:
 
 		const auto dateReader = [&]() {
 			const IdentHeader dateHeader = readHeader(bytesLeft);
+			if (dateHeader.tagType != 23 && dateHeader.tagType != 24) {
+				throw std::runtime_error("Invalid tag for Date");
+			}
+			bytesLeft -= dateHeader.tagLength;
+			const auto timeStr = readBigValue<std::string>(dateHeader.tagLength);
+			if (timeStr.empty()) {
+				throw std::runtime_error("empty time string");
+			}
+
+			std::tm timeObj = {};
+			timeObj.tm_isdst = -1;
 			if (dateHeader.tagType == 23/*UTCTime*/) {
 
 				// https://luca.ntop.org/Teaching/Appunti/asn1.html (see 5.17)
-				bytesLeft -= dateHeader.tagLength;
-				const auto timeStr = readBigValue<std::string>(dateHeader.tagLength);
-				if (timeStr.empty()) {
-					throw std::runtime_error("empty time string");
-				}
-
-				std::tm timeObj = {};
-				timeObj.tm_isdst = -1;
 				if (timeStr.back() == 'Z') {
 					/* UTC time
 					Valid Formats:
 					YYMMDDhhmmZ
-					YYMMDDhhmm+hh'mm'
-					YYMMDDhhmm-hh'mm'
 					YYMMDDhhmmssZ
+					Valid formats, but not alloed in X.509:
 					YYMMDDhhmmss+hh'mm'
 					YYMMDDhhmmss-hh'mm'
+					YYMMDDhhmm+hh'mm'
+					YYMMDDhhmm-hh'mm'
 					*/
 					const int yearVal = (timeStr.at(0) - '0') * 10 + (timeStr.at(1) - '0');
 					timeObj.tm_year = yearVal < 69 ? yearVal + 100 : yearVal; // [0, 68] maps to 2000-2068, values [69, 99] map to 1969-1999
-					timeObj.tm_mon = ((timeStr.at(2) - '0') * 10 + (timeStr.at(3) - '0')) - 1;
-					timeObj.tm_mday = (timeStr.at(4) - '0') * 10 + (timeStr.at(5) - '0');
-
-					timeObj.tm_hour = (timeStr.at(6) - '0') * 10 + (timeStr.at(7) - '0');
-					timeObj.tm_min = (timeStr.at(8) - '0') * 10 + (timeStr.at(9) - '0');
-
-					if (timeStr.at(10) != 'Z') {
-						timeObj.tm_sec = (timeStr.at(10) - '0') * 10 + (timeStr.at(11) - '0');
-					}
 				}else {
-					// times with offsets
-					// TODO: implement
-					assert(false);
+					// times with offsets, not allowed in X.509
+					throw std::runtime_error("Non-Zulu times ar enot allowed");
 				}
-
-				// normalize:
-				return std::mktime(&timeObj);
 			}
 			else if (dateHeader.tagType == 24/*GeneralizedTime*/) {
-				// TODO: Implement
-				assert(false);
-				return std::time_t{};
+				/*
+				Valid formats:
+				YYYYMMDDHHMMSSZ
+				*/
+				const int yearVal = (timeStr.at(0) - '0') * 1000 + (timeStr.at(1) - '0') * 100 + (timeStr.at(2) - '0') * 10 + (timeStr.at(3) - '0');
+				timeObj.tm_year = yearVal - 1900;
 			}else {
 				throw std::runtime_error("Invalid time type");
 			}
+
+			timeObj.tm_mon = ((timeStr.at(2) - '0') * 10 + (timeStr.at(3) - '0')) - 1;
+			timeObj.tm_mday = (timeStr.at(4) - '0') * 10 + (timeStr.at(5) - '0');
+
+			timeObj.tm_hour = (timeStr.at(6) - '0') * 10 + (timeStr.at(7) - '0');
+			timeObj.tm_min = (timeStr.at(8) - '0') * 10 + (timeStr.at(9) - '0');
+
+			if (timeStr.at(10) != 'Z') {
+				timeObj.tm_sec = (timeStr.at(10) - '0') * 10 + (timeStr.at(11) - '0');
+			}
+			// normalize
+			return std::mktime(&timeObj);
 		};
 
 		m_certificate.notBeforeValid = dateReader();
@@ -559,8 +584,8 @@ private:
 	}
 
 	std::string readString(const IdentHeader& header) {
-		if (header.tagType == 19 /*printable string*/ || header.tagType == 12) {
-			// basic ascii
+		if (header.tagType == 19 /*printable string*/ || header.tagType == 12/*UTF8String*/ || header.tagType == 22/*IA5String*/) {
+			// Just read the string byte by byte without processing. Should work in most cases
 			std::string s(header.tagLength, 0);
 			for (size_t i = 0; i < header.tagLength; i++) {
 				s[i] = m_reader.read();

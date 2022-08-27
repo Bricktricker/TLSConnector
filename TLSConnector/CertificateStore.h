@@ -48,7 +48,7 @@ public:
 				return;
 			}
 			assert(val < 256 && val >= 0);
-			std::cout << static_cast<char>(val);
+			//std::cout << static_cast<char>(val);
 			if (val == '\n' || val == '\r') {
 				continue;
 			}
@@ -62,7 +62,10 @@ public:
 					stateBegin = 0;
 				}
 			}else if (currentState == ParseState::CERT) {
-				if (val == '-') {
+				if (val == ' ') {
+					continue;
+				}
+				if (val == '-' || val == '=') {
 					// We reached the end of the base64 encoded certificate
 					currentState = BEGIN_STR;
 					if (i) {
@@ -71,7 +74,12 @@ public:
 						}
 
 						for (j = 0; j < 4; j++) {
-							char_array_4[j] = static_cast<byte>(base64_chars.find(char_array_4[j]));
+							const auto pos = base64_chars.find(char_array_4[i]);
+							// TODO: Find a better base64 decoder implementation
+							// The following assertion fails, if char_array_4[i] is 0.
+							// But this implementation ignores it
+							//assert(pos != std::string::npos);
+							char_array_4[i] = static_cast<byte>(pos);
 						}
 
 						char_array_3[0] = (char_array_4[0] << 2) + ((char_array_4[1] & 0x30) >> 4);
@@ -86,13 +94,20 @@ public:
 					// Parse the decoded certificate
 					BufferWrapper wrapper(certBuffer);
 					BufferReader bufferReader(wrapper);
-					const CertReader parser(bufferReader);
-					m_certificates.push_back(parser.getCertificate());
+					try {
+						const CertReader parser(bufferReader);
+						m_certificates.push_back(parser.getCertificate());
+					}
+					catch (std::exception& e) {
+						std::cerr << e.what() << '\n';
+					}
 				}else {
 					char_array_4[i++] = static_cast<byte>(val);
 					if (i == 4) {
 						for (i = 0; i < 4; i++) {
-							char_array_4[i] = static_cast<byte>(base64_chars.find(char_array_4[i]));
+							const auto pos = base64_chars.find(char_array_4[i]);
+							assert(pos != std::string::npos);
+							char_array_4[i] = static_cast<byte>(pos);
 						}
 
 						char_array_3[0] = (char_array_4[0] << 2) + ((char_array_4[1] & 0x30) >> 4);
@@ -118,7 +133,7 @@ public:
 		addCertificates(reader);
 	}
 
-	bool validateCertChain(const std::vector<Certificate>& certs) const {
+	bool validateCertChain(const std::vector<Certificate>& certs, const std::string& host) const {
 		const std::time_t currentTime = time(nullptr);
 		for (size_t i = 0; i < certs.size(); i++) {
 			 const Certificate& cert = certs[i];
@@ -126,6 +141,13 @@ public:
 			// Check if certificate validity timestamp is in currentTime range
 			if (cert.notBeforeValid > currentTime || cert.notAfterValid < currentTime) {
 				return false;
+			}
+
+			// Check if the send sertificate matches the requested host
+			if (i == 0) {
+				if (cert.subject.commonName != host) {
+					return false;
+				}
 			}
 			
 			// Get next certificate in chain
@@ -143,7 +165,21 @@ public:
 
 			// Validate signature
 			BCRYPT_PKCS1_PADDING_INFO paddingInfo = {};
-			paddingInfo.pszAlgId = cert.caAlgorithm == Algorithm::SHA256 ? BCRYPT_SHA256_ALGORITHM : BCRYPT_SHA512_ALGORITHM;
+			switch (cert.caAlgorithm)
+			{
+			case Algorithm::SHA256:
+				paddingInfo.pszAlgId = BCRYPT_SHA256_ALGORITHM;
+				break;
+			case Algorithm::SHA384:
+				paddingInfo.pszAlgId = BCRYPT_SHA384_ALGORITHM;
+				break;
+			case Algorithm::SHA512:
+				paddingInfo.pszAlgId = BCRYPT_SHA512_ALGORITHM;
+				break;
+			default:
+				throw std::runtime_error("Unsuported hash algorithm");
+			}
+
 			const NTSTATUS status = BCryptVerifySignature(nextCert->publicKey, &paddingInfo,
 				(PUCHAR)cert.signedHash.data(), static_cast<ULONG>(cert.signedHash.size()),
 				(PUCHAR)cert.caSignature.data(), static_cast<ULONG>(cert.caSignature.size()), BCRYPT_PAD_PKCS1);
