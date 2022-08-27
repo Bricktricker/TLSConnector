@@ -165,20 +165,8 @@ public:
 
 			// Validate signature
 			BCRYPT_PKCS1_PADDING_INFO paddingInfo = {};
-			switch (cert.caAlgorithm)
-			{
-			case Algorithm::SHA256:
-				paddingInfo.pszAlgId = BCRYPT_SHA256_ALGORITHM;
-				break;
-			case Algorithm::SHA384:
-				paddingInfo.pszAlgId = BCRYPT_SHA384_ALGORITHM;
-				break;
-			case Algorithm::SHA512:
-				paddingInfo.pszAlgId = BCRYPT_SHA512_ALGORITHM;
-				break;
-			default:
-				throw std::runtime_error("Unsuported hash algorithm");
-			}
+			paddingInfo.pszAlgId = cert.hashAlgorithm;
+			assert(cert.signAlgorithm == KeyAlgorithm::RSA);
 
 			const NTSTATUS status = BCryptVerifySignature(nextCert->publicKey, &paddingInfo,
 				(PUCHAR)cert.signedHash.data(), static_cast<ULONG>(cert.signedHash.size()),

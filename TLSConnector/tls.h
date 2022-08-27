@@ -262,6 +262,7 @@ private:
 				extBuf.putArray({ 0x00, 0x0d }); //extension 'Signature Algorithms'
 				const byte signatureAlgos[] = {
 					0x04, 0x01, // RSA/PKCS1/SHA256
+					0x05, 0x01, // RSA/PKCS1/SHA384
 					0x06, 0x01 // RSA/PKCS1/SHA512
 				};
 				//length information

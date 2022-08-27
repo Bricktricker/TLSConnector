@@ -116,7 +116,9 @@ private:
 			const size_t serialNum = readInteger(tbsSize);
 
 			// read signature algorithm
-			m_certificate.caAlgorithm = readAlgorithm(tbsSize);
+			const auto [hashAlgo, keyAlgo] = readSignatureAlgorithm(tbsSize);
+			m_certificate.hashAlgorithm = hashAlgo;
+			m_certificate.signAlgorithm = keyAlgo;
 
 			// read certificate issuer
 			m_certificate.issuer = readName(tbsSize);
@@ -215,31 +217,14 @@ private:
 			certLength -= tbsHeader.tagLength;
 
 			const byte* signedPartEnd = m_reader.posPtr();
-
-			LPCWSTR hashAlgo = nullptr;
-			switch (m_certificate.caAlgorithm)
-			{
-			case Algorithm::SHA256:
-				hashAlgo = BCRYPT_SHA256_ALGORITHM;
-				break;
-			case Algorithm::SHA384:
-				hashAlgo = BCRYPT_SHA384_ALGORITHM;
-				break;
-			case Algorithm::SHA512:
-				hashAlgo = BCRYPT_SHA512_ALGORITHM;
-				break;
-			default:
-				throw std::runtime_error("Unsuported hash algorithm");
-			}
-
-			RUNNING_HASH hashFunc(hashAlgo);
+			RUNNING_HASH hashFunc(m_certificate.hashAlgorithm);
 			hashFunc.addData(signedPartStart, signedPartEnd - signedPartStart);
 			m_certificate.signedHash = hashFunc.finish();
 		}
 
 		// read signature algorithm
-		const Algorithm caSignatureAlgorithm = readAlgorithm(certLength);
-		if (m_certificate.caAlgorithm != caSignatureAlgorithm) {
+		const auto [caHashAlgo, caSigAlgo] = readSignatureAlgorithm(certLength);
+		if (m_certificate.hashAlgorithm != caHashAlgo || m_certificate.signAlgorithm != caSigAlgo) {
 			throw std::runtime_error("Diffrent signature algorithms found");
 		}
 
@@ -247,8 +232,8 @@ private:
 		assert(certLength == 0);
 	}
 
-	// returns a Algorithm / AlgorithmIdentifier(ASN.1)
-	Algorithm readAlgorithm(size_t& bytesLeft) {
+	// returns a hashed AlgorithmIdentifier(ASN.1)
+	uint32_t readHashedAlgorithm(size_t& bytesLeft) {
 		const IdentHeader algorithmHeader = readHeader(bytesLeft);
 		if (algorithmHeader.tagClass != 0/*universal*/ || algorithmHeader.isPrimitive || algorithmHeader.tagType != 16/*sequence*/) {
 			// invalid signature
@@ -270,24 +255,38 @@ private:
 
 		bytesLeft -= algorithmHeader.tagLength;
 
+		return algorithmOid;
+	}
+
+	std::pair<LPCWSTR, KeyAlgorithm> readSignatureAlgorithm(size_t& bytesLeft) {
+		const uint32_t algorithmOid = readHashedAlgorithm(bytesLeft);
 		switch (algorithmOid)
 		{
-		case 148778961: // rsaEncryption
-			return Algorithm::RSA_ENCRYPTION;
 		case 442154664: // ecdsa-with-SHA256
 			throw std::runtime_error("ECC algorithms are currently unuspported in certificates");
 		case 1167974401: // sha512WithRSAEncryption
-			return Algorithm::SHA512;
+			return std::make_pair(BCRYPT_SHA512_ALGORITHM, KeyAlgorithm::RSA);
 		case 1664878569: // sha256WithRSAEncryption
-			return Algorithm::SHA256;
+			return std::make_pair(BCRYPT_SHA256_ALGORITHM, KeyAlgorithm::RSA);
 		case 3086377730: // sha384WithRSAEncryption
-			return Algorithm::SHA384;
+			return std::make_pair(BCRYPT_SHA384_ALGORITHM, KeyAlgorithm::RSA);
 		case 3477387470: // sha1WithRSAEncryption
 			throw std::runtime_error("No support for SHA1");
 		case 3895541163: // ecdsa-with-SHA384
 			throw std::runtime_error("ECC algorithms are currently unuspported in certificates");
 		default:
 			throw std::runtime_error("unsupported algorithm used");
+		}
+	}
+
+	KeyAlgorithm readKeyAlgorithm(size_t& bytesLeft) {
+		const uint32_t algorithmOid = readHashedAlgorithm(bytesLeft);
+		switch (algorithmOid)
+		{
+		case 148778961: // rsaEncryption
+			return KeyAlgorithm::RSA;
+		default:
+			throw std::runtime_error("Unsuported key algorithm");
 		}
 	}
 
@@ -443,8 +442,8 @@ private:
 			throw std::runtime_error("Invalid SubjectPublicKeyInfo type");
 		}
 
-		m_certificate.keyAlgorithm = readAlgorithm(bytesLeft);
-		assert(m_certificate.keyAlgorithm == Algorithm::RSA_ENCRYPTION);
+		m_certificate.keyAlgorithm = readKeyAlgorithm(bytesLeft);
+		assert(m_certificate.keyAlgorithm == KeyAlgorithm::RSA);
 
 		const IdentHeader bitStringHeader = readHeader(bytesLeft);
 		if (bitStringHeader.tagClass != 0/*universal*/ || bitStringHeader.tagType != 3/*BIT STRING*/) {
