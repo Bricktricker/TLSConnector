@@ -106,26 +106,26 @@ struct BufferReader {
 	explicit BufferReader(const byte* begin, const byte* end) : m_begin(begin), m_pos(begin), m_end(end), m_mark(nullptr) {};
 	~BufferReader() = default;
 
-	byte read() {
+	[[nodiscard]] byte read() {
 		const auto v = *m_pos;
 		++m_pos;
 		return v;
 	}
 
-	uint16_t readU16() {
+	[[nodiscard]] uint16_t readU16() {
 		const uint16_t first = read();
 		const uint16_t second = read();
 		return (first << 8) | second;
 	}
 
-	uint32_t readU24() {
+	[[nodiscard]] uint32_t readU24() {
 		const uint32_t first = read();
 		const uint32_t second = read();
 		const uint32_t third = read();
 		return (first << 16) | (second << 8) | third;
 	}
 
-	uint32_t readU32() {
+	[[nodiscard]] uint32_t readU32() {
 		const uint32_t first = read();
 		const uint32_t second = read();
 		const uint32_t third = read();
@@ -133,7 +133,7 @@ struct BufferReader {
 		return (first << 24) | (second << 16) | (third << 8) | fourth;
 	}
 
-	BufferReader readArray(const size_t length) {
+	[[nodiscard]] BufferReader readArray(const size_t length) {
 		if (length > remaining()) {
 			throw std::out_of_range("readArray out of bounds");
 		}
@@ -142,7 +142,7 @@ struct BufferReader {
 		return BufferReader(begin_array, m_end);
 	}
 
-	std::vector<byte> readArrayRaw(const size_t length) {
+	[[nodiscard]] std::vector<byte> readArrayRaw(const size_t length) {
 		if (length > remaining()) {
 			throw std::out_of_range("readArrayRaw out of bounds");
 		}
@@ -158,20 +158,20 @@ struct BufferReader {
 		m_pos += num;
 	}
 
-	size_t remaining() const {
+	[[nodiscard]] size_t remaining() const {
 		return std::distance(m_pos, m_end);
 	}
 
-	size_t bufferSize() const {
+	[[nodiscard]] size_t bufferSize() const {
 		return std::distance(m_begin, m_end);
 	}
 
 	//returns a pointer to the BEGINNING of the given buffer, not the current position
-	const byte* data() const {
+	[[nodiscard]] const byte* data() const {
 		return &(*m_begin);
 	}
 
-	const byte* posPtr() const {
+	[[nodiscard]] const byte* posPtr() const {
 		return &(*m_pos);
 	}
 

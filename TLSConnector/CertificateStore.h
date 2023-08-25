@@ -190,8 +190,29 @@ private:
 	}
 
 	const Certificate* findCert(const CertEntity& entity) const {
-		assert(m_certificates.size() == 1);
-		return &m_certificates.front();
+		for (const Certificate& cert : m_certificates) {
+			const CertEntity& subject = cert.subject;
+			if (subject.commonName != entity.commonName) {
+				continue;
+			}
+			if (subject.countryName != entity.countryName) {
+				continue;
+			}
+			if (subject.localityName != entity.localityName) {
+				continue;
+			}
+			if (subject.organizationalUnitName != entity.organizationalUnitName) {
+				continue;
+			}
+			if (subject.organizationName != entity.organizationName) {
+				continue;
+			}
+			if (subject.stateOrProvinceName != entity.stateOrProvinceName) {
+				continue;
+			}
+			return &cert;
+		}
+		return nullptr;
 	}
 
 	std::vector<Certificate> m_certificates;

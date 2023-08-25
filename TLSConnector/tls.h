@@ -65,7 +65,7 @@ class TLSConnector {
 
 	struct HandshakeData {
 		explicit HandshakeData(const std::string& _host)
-			: host(_host)
+			: host(_host), certPublicKey(nullptr)
 		{}
 
 		std::vector<byte> clientRandom;
@@ -73,6 +73,7 @@ class TLSConnector {
 		std::vector<byte> serverPublickey;
 		std::unique_ptr<RUNNING_HASH> handshakeHash;
 		const std::string host;
+		BCRYPT_KEY_HANDLE certPublicKey;
 
 		const std::array<std::pair<uint16_t, Cipher>, 6> ciphers {{
 					//format: PRF_HASH, MAC size, AES key size (bytes), explicit iv size (transmitted in enc packet), fixed iv size (derived from PRF), HMAC algorithm, AES mode
@@ -99,8 +100,8 @@ class TLSConnector {
 
 		std::vector<byte> clientMac;
 		std::vector<byte> serverMac;
-		std::vector<byte> clientIV; //needed for AES_GCM, I think
-		std::vector<byte> serverIV; //needed for AES_GCM, I think
+		std::vector<byte> clientIV;
+		std::vector<byte> serverIV;
 
 		std::vector<byte> masterSecret;
 
@@ -365,14 +366,23 @@ private:
 
 		// Validate the certificates if we have a certificate store
 		const bool isValid = m_certStore == nullptr || m_certStore->validateCertChain(sendCerts, handshake->host);
-		std::for_each(sendCerts.begin(), sendCerts.end(), [](const Certificate& cert) {
-			const auto status = BCryptDestroyKey(cert.publicKey);
-			assert(status == 0);
-		});
 			
 		if (!isValid) {
+			std::for_each(sendCerts.begin(), sendCerts.end(), [](const Certificate& cert) {
+				const auto status = BCryptDestroyKey(cert.publicKey);
+				assert(status == 0);
+			});
 			throw std::runtime_error("Could not validate certificate");
 		}
+
+		if (!sendCerts.empty() && m_certStore != nullptr) {
+			handshake->certPublicKey = sendCerts.front().publicKey;
+			std::for_each(std::next(sendCerts.begin()), sendCerts.end(), [](const Certificate& cert) {
+				const auto status = BCryptDestroyKey(cert.publicKey);
+				assert(status == 0);
+			});
+		}
+
 	}
 
 	// receives the data for the key exchange https://datatracker.ietf.org/doc/html/rfc5246#section-7.4.3
@@ -394,10 +404,49 @@ private:
 		handshake->serverPublickey = keyInfoBuffer.readArrayRaw(publicKeyLength);
 
 		//signature, not checked in this implementation
-		keyInfoBuffer.skip(2); //SignatureAndHashAlgorithm https://datatracker.ietf.org/doc/html/rfc5246#section-7.4.1.4.1
+		const uint8_t hashAlgorithm = keyInfoBuffer.read(); // https://datatracker.ietf.org/doc/html/rfc5246#section-7.4.1.4.1
+		const uint8_t signatureAlgorithm = keyInfoBuffer.read();
 		const size_t signatureLength = keyInfoBuffer.readU16();
-		keyInfoBuffer.skip(signatureLength);
+		std::vector<byte> signature = keyInfoBuffer.readArrayRaw(signatureLength);
 		assert(keyInfoBuffer.remaining() == 0);
+
+		if (signatureAlgorithm != 1/*RSA*/) {
+			throw std::runtime_error("Unexpected signature algorithm, expected RSA");
+		}
+
+		LPCWSTR hashAlgName = nullptr;
+		switch (hashAlgorithm) {
+		case 2: hashAlgName = BCRYPT_SHA1_ALGORITHM; break;
+		case 4: hashAlgName = BCRYPT_SHA256_ALGORITHM; break;
+		case 5: hashAlgName = BCRYPT_SHA384_ALGORITHM; break;
+		case 6: hashAlgName = BCRYPT_SHA512_ALGORITHM; break;
+		default: throw std::runtime_error("Unsupported hash algorithm");
+		}
+
+		if (handshake->certPublicKey) {
+			BCRYPT_PKCS1_PADDING_INFO paddingInfo = {};
+			paddingInfo.pszAlgId = hashAlgName;
+
+			RUNNING_HASH hashObj(hashAlgName);
+			hashObj.addData(handshake->clientRandom);
+			hashObj.addData(handshake->serverRandom);
+			hashObj.addData({ 3, 0, 0x1d, static_cast<byte>(handshake->serverPublickey.size()) }); // Curve info from above, is hardcoded to one
+			hashObj.addData(handshake->serverPublickey);
+			std::vector<byte> hashBytes = hashObj.finish();
+
+			NTSTATUS status = BCryptVerifySignature(handshake->certPublicKey, &paddingInfo,
+				hashBytes.data(), hashBytes.size(),
+				signature.data(), signature.size(), BCRYPT_PAD_PKCS1);
+
+			if (status != 0) {
+				// signature not valid
+				throw std::runtime_error("Server public key signature not valid");
+			}
+
+			status = BCryptDestroyKey(handshake->certPublicKey);
+			handshake->certPublicKey = nullptr;
+			assert(status == 0);
+		}
 	}
 
 	// receives the Server Hello Done message https://datatracker.ietf.org/doc/html/rfc5246#section-7.4.5
