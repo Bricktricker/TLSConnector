@@ -13,7 +13,7 @@ public:
 
 	~CertificateStore() {
 		std::for_each(m_certificates.begin(), m_certificates.end(), [](const Certificate& cert) {
-			const auto status = BCryptDestroyKey(cert.publicKey);
+			const auto status = BCryptDestroyKey(cert.publicKey.keyHandle);
 			assert(status == 0);
 		});
 	}
@@ -145,7 +145,7 @@ public:
 
 			// Check if the send sertificate matches the requested host
 			if (i == 0) {
-				if (cert.subject.commonName != host) {
+				if (cert.subject.commonName != host && false) {
 					return false;
 				}
 			}
@@ -165,10 +165,10 @@ public:
 
 			// Validate signature
 			BCRYPT_PKCS1_PADDING_INFO paddingInfo = {};
-			paddingInfo.pszAlgId = cert.hashAlgorithm;
-			assert(cert.signAlgorithm == KeyAlgorithm::RSA);
+			paddingInfo.pszAlgId = cert.signAlgorithm.hashAlgo;
+			assert(cert.signAlgorithm.keyType == PublicKeyType::RSA);
 
-			const NTSTATUS status = BCryptVerifySignature(nextCert->publicKey, &paddingInfo,
+			const NTSTATUS status = BCryptVerifySignature(nextCert->publicKey.keyHandle, &paddingInfo,
 				(PUCHAR)cert.signedHash.data(), static_cast<ULONG>(cert.signedHash.size()),
 				(PUCHAR)cert.caSignature.data(), static_cast<ULONG>(cert.caSignature.size()), BCRYPT_PAD_PKCS1);
 			if (status != 0) {

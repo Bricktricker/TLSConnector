@@ -77,6 +77,7 @@ class TLSConnector {
 
 		const std::array<std::pair<uint16_t, Cipher>, 6> ciphers {{
 					//format: PRF_HASH, MAC size, AES key size (bytes), explicit iv size (transmitted in enc packet), fixed iv size (derived from PRF), HMAC algorithm, AES mode
+			//{0xc02c, { BCRYPT_SHA384_ALGORITHM, 0, 32, 8, 4, BCRYPT_SHA256_ALGORITHM, Cipher::AesMode::GCM }},	//TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384
 			{0xc030, { BCRYPT_SHA384_ALGORITHM, 0, 32, 8, 4, BCRYPT_SHA256_ALGORITHM, Cipher::AesMode::GCM }},	//TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384
 			{0xc02f, { BCRYPT_SHA256_ALGORITHM, 0, 16, 8, 4, BCRYPT_SHA256_ALGORITHM, Cipher::AesMode::GCM }}, //TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256
 			{0xc028, { BCRYPT_SHA384_ALGORITHM, 48, 32, 16, 0, BCRYPT_SHA384_ALGORITHM, Cipher::AesMode::CBC }}, //TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA384
@@ -264,7 +265,10 @@ private:
 				const byte signatureAlgos[] = {
 					0x04, 0x01, // RSA/PKCS1/SHA256
 					0x05, 0x01, // RSA/PKCS1/SHA384
-					0x06, 0x01 // RSA/PKCS1/SHA512
+					0x06, 0x01, // RSA/PKCS1/SHA512
+					0x04, 0x03, // ECDSA/SECP256r1/SHA256
+					0x05, 0x03, // ECDSA/SECP384r1/SHA384
+					0x06, 0x03, // ECDSA/SECP521r1/SHA512
 				};
 				//length information
 				size_t signatureAlgLength = sizeof(signatureAlgos);
@@ -369,16 +373,16 @@ private:
 			
 		if (!isValid) {
 			std::for_each(sendCerts.begin(), sendCerts.end(), [](const Certificate& cert) {
-				const auto status = BCryptDestroyKey(cert.publicKey);
+				const auto status = BCryptDestroyKey(cert.publicKey.keyHandle);
 				assert(status == 0);
 			});
 			throw std::runtime_error("Could not validate certificate");
 		}
 
 		if (!sendCerts.empty() && m_certStore != nullptr) {
-			handshake->certPublicKey = sendCerts.front().publicKey;
+			handshake->certPublicKey = sendCerts.front().publicKey.keyHandle;
 			std::for_each(std::next(sendCerts.begin()), sendCerts.end(), [](const Certificate& cert) {
-				const auto status = BCryptDestroyKey(cert.publicKey);
+				const auto status = BCryptDestroyKey(cert.publicKey.keyHandle);
 				assert(status == 0);
 			});
 		}
@@ -403,7 +407,6 @@ private:
 		const size_t publicKeyLength = keyInfoBuffer.read();
 		handshake->serverPublickey = keyInfoBuffer.readArrayRaw(publicKeyLength);
 
-		//signature, not checked in this implementation
 		const uint8_t hashAlgorithm = keyInfoBuffer.read(); // https://datatracker.ietf.org/doc/html/rfc5246#section-7.4.1.4.1
 		const uint8_t signatureAlgorithm = keyInfoBuffer.read();
 		const size_t signatureLength = keyInfoBuffer.readU16();
@@ -435,8 +438,8 @@ private:
 			std::vector<byte> hashBytes = hashObj.finish();
 
 			NTSTATUS status = BCryptVerifySignature(handshake->certPublicKey, &paddingInfo,
-				hashBytes.data(), hashBytes.size(),
-				signature.data(), signature.size(), BCRYPT_PAD_PKCS1);
+				hashBytes.data(), static_cast<ULONG>(hashBytes.size()),
+				signature.data(), static_cast<ULONG>(signature.size()), BCRYPT_PAD_PKCS1);
 
 			if (status != 0) {
 				// signature not valid

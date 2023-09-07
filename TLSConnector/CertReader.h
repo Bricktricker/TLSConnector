@@ -116,9 +116,7 @@ private:
 			const size_t serialNum = readInteger(tbsSize);
 
 			// read signature algorithm
-			const auto [hashAlgo, keyAlgo] = readSignatureAlgorithm(tbsSize);
-			m_certificate.hashAlgorithm = hashAlgo;
-			m_certificate.signAlgorithm = keyAlgo;
+			m_certificate.signAlgorithm = readSignatureAlgorithm(tbsSize);
 
 			// read certificate issuer
 			m_certificate.issuer = readName(tbsSize);
@@ -217,14 +215,14 @@ private:
 			certLength -= tbsHeader.tagLength;
 
 			const byte* signedPartEnd = m_reader.posPtr();
-			RUNNING_HASH hashFunc(m_certificate.hashAlgorithm);
+			RUNNING_HASH hashFunc(m_certificate.signAlgorithm.hashAlgo);
 			hashFunc.addData(signedPartStart, signedPartEnd - signedPartStart);
 			m_certificate.signedHash = hashFunc.finish();
 		}
 
 		// read signature algorithm
-		const auto [caHashAlgo, caSigAlgo] = readSignatureAlgorithm(certLength);
-		if (m_certificate.hashAlgorithm != caHashAlgo || m_certificate.signAlgorithm != caSigAlgo) {
+		const AlgorithmIdentifier caSigAlgorithm = readSignatureAlgorithm(certLength);
+		if (m_certificate.signAlgorithm.hashAlgo != caSigAlgorithm.hashAlgo || m_certificate.signAlgorithm.keyType != caSigAlgorithm.keyType) {
 			throw std::runtime_error("Diffrent signature algorithms found");
 		}
 
@@ -233,7 +231,7 @@ private:
 	}
 
 	// returns a hashed AlgorithmIdentifier(ASN.1)
-	uint32_t readHashedAlgorithm(size_t& bytesLeft) {
+	std::pair<uint32_t, uint32_t> readHashedAlgorithm(size_t& bytesLeft) {
 		const IdentHeader algorithmHeader = readHeader(bytesLeft);
 		if (algorithmHeader.tagClass != 0/*universal*/ || algorithmHeader.isPrimitive || algorithmHeader.tagType != 16/*sequence*/) {
 			// invalid signature
@@ -243,50 +241,42 @@ private:
 
 		const uint32_t algorithmOid = readHashedOid(signatureLength);
 
+		uint32_t additionalData = 0;
 		if (signatureLength > 0) {
+			m_reader.mark();
+			size_t oldSigLength = signatureLength;
 			const IdentHeader parametersHeader = readHeader(signatureLength);
 			if (parametersHeader.tagLength > 0) {
-				// TODO: Reader additional parameter for the algorithm
-				assert(false); // TODO: implement
-				m_reader.skip(parametersHeader.tagLength);
+				m_reader.reset();
+				additionalData = readHashedOid(oldSigLength);
 				signatureLength -= parametersHeader.tagLength;
 			}
 		}
 
 		bytesLeft -= algorithmHeader.tagLength;
 
-		return algorithmOid;
+		return std::make_pair(algorithmOid, additionalData);
 	}
 
-	std::pair<LPCWSTR, KeyAlgorithm> readSignatureAlgorithm(size_t& bytesLeft) {
-		const uint32_t algorithmOid = readHashedAlgorithm(bytesLeft);
+	AlgorithmIdentifier readSignatureAlgorithm(size_t& bytesLeft) {
+		const auto [algorithmOid, additionalData] = readHashedAlgorithm(bytesLeft);
+		// Additional data should always be 0 here
 		switch (algorithmOid)
 		{
 		case 442154664: // ecdsa-with-SHA256
-			throw std::runtime_error("ECC algorithms are currently unuspported in certificates");
+			return AlgorithmIdentifier{ PublicKeyType::ECDSA, BCRYPT_SHA256_ALGORITHM };
 		case 1167974401: // sha512WithRSAEncryption
-			return std::make_pair(BCRYPT_SHA512_ALGORITHM, KeyAlgorithm::RSA);
+			return AlgorithmIdentifier{ PublicKeyType::RSA, BCRYPT_SHA512_ALGORITHM };
 		case 1664878569: // sha256WithRSAEncryption
-			return std::make_pair(BCRYPT_SHA256_ALGORITHM, KeyAlgorithm::RSA);
+			return AlgorithmIdentifier{ PublicKeyType::RSA, BCRYPT_SHA256_ALGORITHM };
 		case 3086377730: // sha384WithRSAEncryption
-			return std::make_pair(BCRYPT_SHA384_ALGORITHM, KeyAlgorithm::RSA);
+			return AlgorithmIdentifier{ PublicKeyType::RSA, BCRYPT_SHA384_ALGORITHM };
 		case 3477387470: // sha1WithRSAEncryption
-			throw std::runtime_error("No support for SHA1");
+			return AlgorithmIdentifier{ PublicKeyType::RSA, BCRYPT_SHA1_ALGORITHM };
 		case 3895541163: // ecdsa-with-SHA384
-			throw std::runtime_error("ECC algorithms are currently unuspported in certificates");
+			return AlgorithmIdentifier{ PublicKeyType::ECDSA, BCRYPT_SHA384_ALGORITHM };
 		default:
 			throw std::runtime_error("unsupported algorithm used");
-		}
-	}
-
-	KeyAlgorithm readKeyAlgorithm(size_t& bytesLeft) {
-		const uint32_t algorithmOid = readHashedAlgorithm(bytesLeft);
-		switch (algorithmOid)
-		{
-		case 148778961: // rsaEncryption
-			return KeyAlgorithm::RSA;
-		default:
-			throw std::runtime_error("Unsuported key algorithm");
 		}
 	}
 
@@ -337,6 +327,9 @@ private:
 				break;
 			case 1208742436:
 				entries.stateOrProvinceName = value;
+				break;
+			case 1367325322: // organizationIdentifier
+				// We ignore the organization identifier in the ertificate entity
 				break;
 			case 1532690896:
 				entries.organizationalUnitName = value;
@@ -442,8 +435,21 @@ private:
 			throw std::runtime_error("Invalid SubjectPublicKeyInfo type");
 		}
 
-		m_certificate.keyAlgorithm = readKeyAlgorithm(bytesLeft);
-		assert(m_certificate.keyAlgorithm == KeyAlgorithm::RSA);
+		m_certificate.publicKey.keyHandle = nullptr;
+		const auto [algorithmOid, additionalData] = readHashedAlgorithm(bytesLeft);
+		switch (algorithmOid)
+		{
+		case 148778961: // rsaEncryption
+			m_certificate.publicKey.keyType = PublicKeyType::RSA;
+			break;
+		case 2822159549:
+			m_certificate.publicKey.keyType = PublicKeyType::ECDSA;
+			assert(additionalData != 0);
+			m_certificate.publicKey.curveType = additionalData;
+			break;
+		default:
+			throw std::runtime_error("Unsuported key algorithm");
+		}
 
 		const IdentHeader bitStringHeader = readHeader(bytesLeft);
 		if (bitStringHeader.tagClass != 0/*universal*/ || bitStringHeader.tagType != 3/*BIT STRING*/) {
@@ -454,49 +460,99 @@ private:
 		const auto unusedBits = m_reader.read(); bytesLeft--;
 		assert(unusedBits == 0);
 
-		const IdentHeader sequenceHeader = readHeader(bytesLeft);
-		if (sequenceHeader.tagClass != 0/*universal*/ || sequenceHeader.tagType != 16/*Sequence*/) {
-			throw std::runtime_error("Invalid sequence type in public key");
-		}
+		if (m_certificate.publicKey.keyType == PublicKeyType::RSA) {
+			const IdentHeader sequenceHeader = readHeader(bytesLeft);
+			if (sequenceHeader.tagClass != 0/*universal*/ || sequenceHeader.tagType != 16/*Sequence*/) {
+				throw std::runtime_error("Invalid sequence type in public key");
+			}
 
-		const IdentHeader modulusHeader = readHeader(bytesLeft);
-		if (modulusHeader.tagClass != 0/*universal*/ || modulusHeader.tagType != 2/*INTEGER*/) {
-			throw std::runtime_error("Invalid integer type in modulus");
-		}
-		auto modulus = readBigValue(modulusHeader.tagLength);
-		bytesLeft -= modulusHeader.tagLength;
+			const IdentHeader modulusHeader = readHeader(bytesLeft);
+			if (modulusHeader.tagClass != 0/*universal*/ || modulusHeader.tagType != 2/*INTEGER*/) {
+				throw std::runtime_error("Invalid integer type in modulus");
+			}
+			auto modulus = readBigValue(modulusHeader.tagLength);
+			bytesLeft -= modulusHeader.tagLength;
 
-		while ((modulus.size() % 0x10) && modulus.at(0) == 0) {
-			modulus.erase(modulus.begin());
-		}
+			while ((modulus.size() % 0x10) && modulus.at(0) == 0) {
+				modulus.erase(modulus.begin());
+			}
 
-		const IdentHeader expHeader = readHeader(bytesLeft);
-		if (expHeader.tagClass != 0/*universal*/ || expHeader.tagType != 2/*INTEGER*/) {
-			throw std::runtime_error("Invalid integer type in exponent");
-		}
-		const auto exponent = readBigValue(expHeader.tagLength);
-		bytesLeft -= expHeader.tagLength;
+			const IdentHeader expHeader = readHeader(bytesLeft);
+			if (expHeader.tagClass != 0/*universal*/ || expHeader.tagType != 2/*INTEGER*/) {
+				throw std::runtime_error("Invalid integer type in exponent");
+			}
+			const auto exponent = readBigValue(expHeader.tagLength);
+			bytesLeft -= expHeader.tagLength;
 
-		BCRYPT_ALG_HANDLE algHandle = nullptr;
-		NTSTATUS status = BCryptOpenAlgorithmProvider(&algHandle, BCRYPT_RSA_ALGORITHM, NULL, 0);
-		if (status != 0 || algHandle == nullptr) {
-			throw std::runtime_error("Could not open RSA provider");
-		}
-		std::vector<byte> blobData(sizeof(BCRYPT_RSAKEY_BLOB) + modulus.size() + exponent.size());
-		BCRYPT_RSAKEY_BLOB* blob = reinterpret_cast<BCRYPT_RSAKEY_BLOB*>(blobData.data());
-		const auto modItr = std::copy(exponent.begin(), exponent.end(), std::next(blobData.begin(), sizeof(BCRYPT_RSAKEY_BLOB)));
-		std::copy(modulus.begin(), modulus.end(), modItr);
-		blob->Magic = BCRYPT_RSAPUBLIC_MAGIC;
-		blob->BitLength = static_cast<ULONG>(modulus.size() * 8);
-		blob->cbModulus = static_cast<ULONG>(modulus.size());
-		blob->cbPublicExp = static_cast<ULONG>(exponent.size());
-		blob->cbPrime1 = 0;
-		blob->cbPrime2 = 0;
+			BCRYPT_ALG_HANDLE algHandle = nullptr;
+			NTSTATUS status = BCryptOpenAlgorithmProvider(&algHandle, BCRYPT_RSA_ALGORITHM, NULL, 0);
+			if (status != 0 || algHandle == nullptr) {
+				throw std::runtime_error("Could not open RSA provider");
+			}
+			std::vector<byte> blobData(sizeof(BCRYPT_RSAKEY_BLOB) + modulus.size() + exponent.size());
+			BCRYPT_RSAKEY_BLOB* blob = reinterpret_cast<BCRYPT_RSAKEY_BLOB*>(blobData.data());
+			const auto modItr = std::copy(exponent.begin(), exponent.end(), std::next(blobData.begin(), sizeof(BCRYPT_RSAKEY_BLOB)));
+			std::copy(modulus.begin(), modulus.end(), modItr);
+			blob->Magic = BCRYPT_RSAPUBLIC_MAGIC;
+			blob->BitLength = static_cast<ULONG>(modulus.size() * 8);
+			blob->cbModulus = static_cast<ULONG>(modulus.size());
+			blob->cbPublicExp = static_cast<ULONG>(exponent.size());
+			blob->cbPrime1 = 0;
+			blob->cbPrime2 = 0;
 
-		status = BCryptImportKeyPair(algHandle, nullptr, BCRYPT_PUBLIC_KEY_BLOB, &m_certificate.publicKey, blobData.data(), static_cast<ULONG>(blobData.size()), 0);
-		BCryptCloseAlgorithmProvider(algHandle, 0);
-		if (status != 0) {
-			throw std::runtime_error("Could not import public key");
+			status = BCryptImportKeyPair(algHandle, nullptr, BCRYPT_PUBLIC_KEY_BLOB, &m_certificate.publicKey.keyHandle, blobData.data(), static_cast<ULONG>(blobData.size()), 0);
+			BCryptCloseAlgorithmProvider(algHandle, 0);
+			if (status != 0) {
+				throw std::runtime_error("Could not import public key");
+			}
+		}
+		else if (m_certificate.publicKey.keyType == PublicKeyType::ECDSA) {
+			LPCWSTR curveAlgo = nullptr;
+			ULONG curveMagic = 0;
+			switch (m_certificate.publicKey.curveType)
+			{
+			case 1178679174: // P-384
+				curveAlgo = BCRYPT_ECDSA_P384_ALGORITHM;
+				curveMagic = BCRYPT_ECDSA_PUBLIC_P384_MAGIC;
+				break;
+			case 2082405939: // P-256
+				curveAlgo = BCRYPT_ECDSA_P256_ALGORITHM;
+				curveMagic = BCRYPT_ECDSA_PUBLIC_P256_MAGIC;
+				break;
+			default:
+				throw std::runtime_error("Unsupported ECC curve");
+			}
+
+			BCRYPT_ALG_HANDLE algHandle = nullptr;
+			NTSTATUS status = BCryptOpenAlgorithmProvider(&algHandle, curveAlgo, NULL, 0);
+			if (status != 0 || algHandle == nullptr) {
+				throw std::runtime_error("Could not open ECC Curve provider");
+			}
+
+			// pc describes key format
+			const byte pc = m_reader.read(); bytesLeft--;
+			if (pc != 4/*uncompressed*/) {
+				throw std::runtime_error("Only uncompressed curve points supported");
+			}
+
+			const size_t eccKeyLen = (bitStringHeader.tagLength - 1) / 2;
+
+			std::vector<byte> blobData(sizeof(BCRYPT_ECCKEY_BLOB) + (eccKeyLen * 2));
+			BCRYPT_ECCKEY_BLOB* blob = reinterpret_cast<BCRYPT_ECCKEY_BLOB*>(blobData.data());
+			blob->cbKey = static_cast<ULONG>(eccKeyLen);
+			blob->dwMagic = curveMagic;
+			const auto keyData = readBigValue(eccKeyLen * 2);
+			bytesLeft -= eccKeyLen * 2;
+			std::copy(keyData.begin(), keyData.end(), std::next(blobData.begin(), sizeof(BCRYPT_ECCKEY_BLOB)));
+
+			status = BCryptImportKeyPair(algHandle, nullptr, BCRYPT_PUBLIC_KEY_BLOB, &m_certificate.publicKey.keyHandle, blobData.data(), static_cast<ULONG>(blobData.size()), 0);
+			BCryptCloseAlgorithmProvider(algHandle, 0);
+			if (status != 0) {
+				throw std::runtime_error("Could not import public key");
+			}
+		}
+		else {
+			throw std::runtime_error("Unsupported public key type");
 		}
 	}
 
@@ -583,7 +639,7 @@ private:
 	}
 
 	std::string readString(const IdentHeader& header) {
-		if (header.tagType == 19 /*printable string*/ || header.tagType == 12/*UTF8String*/ || header.tagType == 22/*IA5String*/) {
+		if (header.tagType == 19 /*printable string*/ || header.tagType == 12/*UTF8String*/ || header.tagType == 22/*IA5String*/ || header.tagType == 20/*TeletexString*/) {
 			// Just read the string byte by byte without processing. Should work in most cases
 			std::string s(header.tagLength, 0);
 			for (size_t i = 0; i < header.tagLength; i++) {

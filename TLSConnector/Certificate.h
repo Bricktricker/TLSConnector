@@ -11,8 +11,20 @@ struct CertEntity {
 	std::string commonName;
 };
 
-enum KeyAlgorithm {
-	RSA
+enum PublicKeyType {
+	RSA,
+	ECDSA
+};
+
+struct AlgorithmIdentifier {
+	PublicKeyType keyType;
+	LPCWSTR hashAlgo;
+};
+
+struct PublicKey {
+	PublicKeyType keyType;
+	uint32_t curveType;
+	BCRYPT_KEY_HANDLE keyHandle;
 };
 
 struct BasicConstraints {
@@ -36,11 +48,9 @@ struct Certificate
 	CertEntity subject;
 	CertEntity issuer; // The one who signed this cert
 
-	KeyAlgorithm keyAlgorithm;
-	BCRYPT_KEY_HANDLE publicKey;
+	PublicKey publicKey;
 
-	LPCWSTR hashAlgorithm;
-	KeyAlgorithm signAlgorithm;
+	AlgorithmIdentifier signAlgorithm;
 	std::vector<byte> caSignature;
 
 	std::vector<byte> signedHash;
