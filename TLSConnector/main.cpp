@@ -9,7 +9,7 @@
 #pragma comment (lib, "Ws2_32.lib")
 #pragma comment (lib, "Bcrypt.lib")
 
-#define URL "google.de" //"ecdsa-test.germancoding.com"
+#define URL "google.com"
 
 // https://stackoverflow.com/questions/874134/find-out-if-string-ends-with-another-string-in-c
 static bool endsWith(std::string_view str, std::string_view suffix) {
@@ -19,8 +19,6 @@ static bool endsWith(std::string_view str, std::string_view suffix) {
 int main() {
 	CertificateStore certStore;
 	try {
-		//certStore.addCertificates("ecdsaCert.pem");
-		//certStore.addCertificates("ca-root.pem");
 		certStore.addCertificates("firefoxCAs.pem");
 	}
 	catch (const std::exception& e) {

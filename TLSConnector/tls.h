@@ -75,9 +75,9 @@ class TLSConnector {
 		const std::string host;
 		BCRYPT_KEY_HANDLE certPublicKey;
 
-		const std::array<std::pair<uint16_t, Cipher>, 6> ciphers {{
+		const std::array<std::pair<uint16_t, Cipher>, 7> ciphers {{
 					//format: PRF_HASH, MAC size, AES key size (bytes), explicit iv size (transmitted in enc packet), fixed iv size (derived from PRF), HMAC algorithm, AES mode
-			//{0xc02c, { BCRYPT_SHA384_ALGORITHM, 0, 32, 8, 4, BCRYPT_SHA256_ALGORITHM, Cipher::AesMode::GCM }},	//TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384
+			{0xc02c, { BCRYPT_SHA384_ALGORITHM, 0, 32, 8, 4, BCRYPT_SHA384_ALGORITHM, Cipher::AesMode::GCM }},	//TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384
 			{0xc030, { BCRYPT_SHA384_ALGORITHM, 0, 32, 8, 4, BCRYPT_SHA256_ALGORITHM, Cipher::AesMode::GCM }},	//TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384
 			{0xc02f, { BCRYPT_SHA256_ALGORITHM, 0, 16, 8, 4, BCRYPT_SHA256_ALGORITHM, Cipher::AesMode::GCM }}, //TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256
 			{0xc028, { BCRYPT_SHA384_ALGORITHM, 48, 32, 16, 0, BCRYPT_SHA384_ALGORITHM, Cipher::AesMode::CBC }}, //TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA384
@@ -287,11 +287,16 @@ private:
 					});
 			}
 
-			//Supported groups extension (hardcoded to only suport x25519 curve)
+			//Supported groups extension
 			extBuf.putArray({0x00, 0x0a}); // extension 'supported groups'
-			extBuf.putU16(4);
-			extBuf.putU16(2);
-			extBuf.putArray({0x00, 0x1d}); // curve x25519
+			extBuf.putU16(10);
+			extBuf.putU16(8);
+			extBuf.putArray({
+				0x00, 0x1d, // curve x25519
+				0x00, 0x17, // curve secp256r1
+				0x00, 0x18, // curve secp384r1
+				0x00, 0x19, // curve secp521r1
+			});
 
 			//EC points formats extension
 			extBuf.putArray({ 0x00, 0x0b }); //extension 'EC points format'
